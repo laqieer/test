@@ -97,6 +97,253 @@ namespace FEBuilderGBA.Core.Tests
             return patchDir;
         }
 
+        [Theory]
+        [InlineData("installed", true)]
+        [InlineData("unknown", true)]
+        [InlineData("absent", false)]
+        public void AuditedLibraryRetainsActualRebuildSafeRejectClassification(string status, bool refuses)
+        {
+            var rom = MakeVersionedRom("BE8E01");
+            string macro = status == "unknown" ? "$XGREP4 0xDE 0xAD" : "$FGREP4 ../shared/pattern.bin";
+            string definition = WriteAuditedDefinition("TYPE=EA\nPATCHED_IF:" + macro + "=0xDE 0xAD");
+            if (status == "installed") new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }.CopyTo(rom.Data, 0x1000);
+            CoreState.ROM = rom;
+            var patch = PatchHardCodeScanner.LoadPatch(rom, definition, "en");
+            var expected = status switch
+            {
+                "installed" => PatchHardCodeScanner.InstallStatusEnum.Installed,
+                "unknown" => PatchHardCodeScanner.InstallStatusEnum.Unknown,
+                _ => PatchHardCodeScanner.InstallStatusEnum.NotInstalled,
+            };
+            Assert.Equal(expected, PatchHardCodeScanner.EaBinInstallStatus(rom, patch));
+            Assert.Equal(refuses, RebuildProducerCore.PatchFormHasUnportableInstalledPatch(rom));
+        }
+
+        [Theory]
+        [InlineData("WIDTH")]
+        [InlineData("HEIGHT")]
+        [InlineData("PALETTE")]
+        public void AuditedImageDimensionsUseTheActualRebuildCommandReader(string key)
+        {
+            var rom = MakeVersionedRom("BE8E01");
+            CoreState.ROM = rom;
+            new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }.CopyTo(rom.Data, 0x100);
+            rom.write_p32(0x200, 0x4000);
+            string definition = WriteAuditedDefinition("TYPE=IMAGE\nIMAGE_POINTER=0x200\nPALETTE_ADDRESS=0x8000\n" +
+                key + "=$FGREP4 ../shared/pattern.bin");
+            var patch = PatchHardCodeScanner.LoadPatch(rom, definition, "en");
+            var addresses = new List<Address>();
+            RebuildProducerCore.EmitPatchImage(rom, addresses, patch, false);
+            var image = Assert.Single(addresses, a => a.DataType == Address.DataTypeEnum.IMG);
+            var palette = Assert.Single(addresses, a => a.DataType == Address.DataTypeEnum.PAL);
+            Assert.Equal(0x4000u, image.Addr);
+            Assert.Equal(key == "PALETTE" ? 32u : 1024u, image.Length);
+            Assert.Equal(key == "PALETTE" ? 8192u : 32u, palette.Length);
+        }
+
+        [Theory]
+        [InlineData("WIDTH=$FGREP4 {0}")]
+        [InlineData("HEIGHT=$FGREP4 {0}")]
+        [InlineData("PALETTE=$FGREP4 {0}")]
+        [InlineData("NEW_TARGET_SELECTION_STRUCT=$FGREP4 {0}")]
+        [InlineData("BIN:$FGREP4 {0}=payload.bin")]
+        [InlineData("BINP:$FGREP4 {0}=payload.bin")]
+        [InlineData("BINF:$FGREP4 {0}=payload.bin")]
+        [InlineData("BINAP:$FGREP4 {0}=payload.bin")]
+        public void RejectedRebuildOperandsNeverCallItsActualResolverReader(string field)
+        {
+            const string operand = @"\\unused.invalid\share\pattern.bin";
+            int resolvers = 0, exists = 0, reads = 0;
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                string definition = WriteAuditedDefinition("TYPE=IMAGE\n" + string.Format(field, operand));
+                resolvers++;
+                _ = RebuildProducerCore.ResolvePatchAddressWithFileReadsForTest(
+                    MakeVersionedRom("BE8E01"), "$FGREP4 " + operand, 0, 0x100, Path.GetDirectoryName(definition)!,
+                    _ => { exists++; return false; },
+                    _ => { reads++; return Array.Empty<byte>(); });
+            });
+            Assert.Equal(0, resolvers);
+            Assert.Equal(0, exists);
+            Assert.Equal(0, reads);
+        }
+
+        [Theory]
+        [InlineData("BIN")]
+        [InlineData("BINP")]
+        [InlineData("BINAP")]
+        [InlineData("BINF")]
+        public void AuditedBinarySidecarsRemainContainedInBothActualRegionReaders(string keyword)
+        {
+            var rom = MakeVersionedRom("BE8E01");
+            CoreState.ROM = rom;
+            string definition = WriteAuditedDefinition("TYPE=BIN\n" + keyword + ":0x1000=../shared/pattern.bin");
+            string pattern = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(definition)!, "..", "shared", "pattern.bin"));
+            int exists = 0, reads = 0;
+            bool Exists(string path)
+            {
+                exists++;
+                Assert.Contains(Path.GetFullPath(path), new[] { definition, pattern });
+                return File.Exists(path);
+            }
+            byte[] Read(string path)
+            {
+                reads++;
+                Assert.Equal(pattern, Path.GetFullPath(path));
+                return File.ReadAllBytes(path);
+            }
+            var regions = PatchMetadataCore.CollectPatchRegionsWithBytesForTest(rom, definition,
+                out int untraceable, Exists, Read);
+            Assert.Equal(0, untraceable);
+            var region = Assert.Single(regions);
+            Assert.Equal(0x1000u, region.Address);
+            Assert.Equal(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }, region.PatchBytes);
+            Assert.Equal(2, exists);
+            Assert.Equal(1, reads);
+            byte[] actual = EventAssemblerUninstallCore.ReadModWithFileReadsForTest(
+                new[] { keyword, "0x1000", "0" }, pattern, out bool[] mask, rom, Exists, Read);
+            Assert.Equal(region.PatchBytes, actual);
+            Assert.Equal(actual.Length, mask.Length);
+            Assert.Equal(3, exists);
+            Assert.Equal(2, reads);
+        }
+
+        [Theory]
+        [InlineData("BIN")]
+        [InlineData("BINP")]
+        [InlineData("BINAP")]
+        [InlineData("BINF")]
+        public void RejectedSidecarNeverReachesRegionOrReadModFileSinks(string keyword)
+        {
+            const string operand = @"\\unused.invalid\share\pattern.bin";
+            int exists = 0, reads = 0, consumers = 0;
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                string definition = WriteAuditedDefinition("TYPE=BIN\n" + keyword + ":0x1000=" + operand);
+                consumers++;
+                var rom = MakeVersionedRom("BE8E01");
+                _ = PatchMetadataCore.CollectPatchRegionsWithBytesForTest(rom, definition, out _,
+                    _ => { exists++; return false; }, _ => { reads++; return Array.Empty<byte>(); });
+                _ = EventAssemblerUninstallCore.ReadModWithFileReadsForTest(
+                    new[] { keyword, "0x1000" }, operand, out _, rom,
+                    _ => { exists++; return false; }, _ => { reads++; return Array.Empty<byte>(); });
+            });
+            Assert.Equal(0, consumers);
+            Assert.Equal(0, exists);
+            Assert.Equal(0, reads);
+        }
+
+        [Fact]
+        public void AuditedSymbolAndNestedNonPatchDescriptorUseTheirActualReaders()
+        {
+            var rom = MakeVersionedRom("BE8E01");
+            CoreState.ROM = rom;
+            new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }.CopyTo(rom.Data, 0x1000);
+            string definition = WriteAuditedDefinition(
+                "TYPE=BIN\nSYMBOL=../shared/symbols.data\nEDIT_PATCH=../shared/nested.data",
+                ("shared/symbols.data", "00001000 imported_label"),
+                ("shared/nested.data", "TYPE=BIN\nBIN:0x1000=pattern.bin"));
+            string root = StageFe8uPatchDir();
+            string symbol = Path.Combine(root, "shared", "symbols.data");
+            string nested = Path.Combine(root, "shared", "nested.data");
+            var patch = PatchHardCodeScanner.LoadPatch(rom, definition, "en");
+            int probes = 0, symbols = 0, definitions = 0;
+            bool Exists(string path)
+            {
+                probes++;
+                Assert.Contains(Path.GetFullPath(path), new[] { symbol, nested });
+                return File.Exists(path);
+            }
+            var addresses = new List<Address>();
+            RebuildProducerCore.ProcessPatchSymbolWithFileReadsForTest(addresses, patch, Exists, path =>
+            {
+                symbols++;
+                Assert.Equal(symbol, Path.GetFullPath(path));
+                return File.ReadAllText(path);
+            });
+            Assert.Contains(addresses, a => a.Addr == 0x1000 && a.Info.Contains("imported_label"));
+            var untraceable = new List<string>();
+            var child = RebuildProducerCore.LoadEditPatchWithFileReadsForTest("../shared/nested.data", patch,
+                untraceable, Exists, path =>
+                {
+                    definitions++;
+                    Assert.Equal(nested, Path.GetFullPath(path));
+                    return PatchInstallCore.LoadPatch(path);
+                });
+            Assert.Equal("pattern.bin", child.Param["BIN:0x1000"]);
+            Assert.Empty(untraceable);
+            Assert.Equal(2, probes);
+            Assert.Equal(1, symbols);
+            Assert.Equal(1, definitions);
+            RebuildProducerCore.EmitPatchBIN(rom, addresses, patch, false);
+            Assert.Contains(addresses, a => a.Addr == 0x1000 && a.DataType == Address.DataTypeEnum.MIX);
+        }
+
+        [Theory]
+        [InlineData("SYMBOL")]
+        [InlineData("EDIT_PATCH")]
+        public void RejectedSymbolOrNestedDescriptorNeverCallsItsActualFileReader(string key)
+        {
+            const string operand = @"\\unused.invalid\share\sidecar";
+            int probes = 0, reads = 0, consumers = 0;
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                string definition = WriteAuditedDefinition("TYPE=BIN\n" + key + "=" + operand);
+                consumers++;
+                var patch = PatchHardCodeScanner.LoadPatch(MakeVersionedRom("BE8E01"), definition, "en");
+                RebuildProducerCore.ProcessPatchSymbolWithFileReadsForTest(new(), patch,
+                    _ => { probes++; return false; }, _ => { reads++; return ""; });
+                _ = RebuildProducerCore.LoadEditPatchWithFileReadsForTest(operand, patch, new(),
+                    _ => { probes++; return false; }, _ => { reads++; return null!; });
+            });
+            Assert.Equal(0, consumers);
+            Assert.Equal(0, probes);
+            Assert.Equal(0, reads);
+        }
+
+        [Fact]
+        public void CanonicalModDiscoveryRetainsLiteralOnlyIfSemantics()
+        {
+            var rom = MakeVersionedRom("BE8E01");
+            CoreState.ROM = rom;
+            new byte[] { 0x41, 0x42, 0x43, 0x44 }.CopyTo(rom.Data, 0x1000);
+            WriteAuditedDefinition("TYPE=BIN",
+                ("nested/MOD_literal.txt", "FORM=LiteralMatch\nIF:0x1000=0x41 0x42"),
+                ("nested/MOD_mismatch.txt", "FORM=LiteralMismatch\nIF:0x1000=0xFE 0xEF"),
+                ("nested/MOD_no_macro.txt", "FORM=MacroRemainsIgnored\nIF:$FGREP4 pattern=0xFE 0xEF"),
+                ("nested/pattern", "ABCD"));
+            var mod = new Mod();
+            mod.Load();
+            Assert.Contains(mod.Mods, m => m.Form == "LiteralMatch");
+            Assert.DoesNotContain(mod.Mods, m => m.Form == "LiteralMismatch");
+            Assert.Contains(mod.Mods, m => m.Form == "MacroRemainsIgnored");
+        }
+
+        string WriteAuditedDefinition(string text, params (string Name, string Text)[] sidecars)
+        {
+            CoreState.BaseDirectory = _tempDir;
+            string version = StageFe8uPatchDir();
+            Directory.CreateDirectory(Path.Combine(version, "nested"));
+            Directory.CreateDirectory(Path.Combine(version, "shared"));
+            string definition = Path.Combine(version, "nested", "PATCH_audited.txt");
+            File.WriteAllText(definition, text);
+            File.WriteAllBytes(Path.Combine(version, "shared", "pattern.bin"), new byte[] { 0xDE, 0xAD, 0xBE, 0xEF });
+            var manifest = new Dictionary<string, long>
+            {
+                ["nested/PATCH_audited.txt"] = new FileInfo(definition).Length,
+                ["shared/pattern.bin"] = 4,
+            };
+            foreach (var file in sidecars)
+            {
+                string path = Path.Combine(version, file.Name.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, file.Text);
+                manifest[file.Name] = new FileInfo(path).Length;
+            }
+            PatchDatabaseMetadataAuditCore.Audit(version, manifest);
+            return definition;
+        }
+
         // ====================================================================
         // 1. PatchHardCodeScanner.EaBinInstallStatus — the SOUND tri-state.
         //    The all-zero synthetic ROM reads 0x00 at every offset, so:

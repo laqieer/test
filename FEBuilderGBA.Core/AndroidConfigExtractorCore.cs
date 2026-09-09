@@ -95,6 +95,15 @@ namespace FEBuilderGBA
             string targetRootDir,
             string version,
             string stampFileName = DefaultStampFileName)
+            => EnsureExtracted(source, targetRootDir, version, false, stampFileName);
+
+        /// <summary>Opt into preserving the separately installed patch database during bundled-config refresh.</summary>
+        public static ExtractionResult EnsureExtracted(
+            IAssetSource source,
+            string targetRootDir,
+            string version,
+            bool preservePatchDatabase,
+            string stampFileName = DefaultStampFileName)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (string.IsNullOrEmpty(targetRootDir)) throw new ArgumentException("targetRootDir must be non-empty", nameof(targetRootDir));
@@ -107,9 +116,29 @@ namespace FEBuilderGBA
                 throw new ArgumentException("stampFileName must be a simple file name (no path separators, not rooted, no '..')", nameof(stampFileName));
 
             string stampPath = Path.Combine(targetRootDir, stampFileName);
+            string protectedRoot = Path.GetFullPath(Path.Combine(targetRootDir, "config", "patch2"));
+            List<string>? manifest = null;
+            bool safeStampProbes = true;
+            if (preservePatchDatabase)
+            {
+                PatchDatabaseOperationLeaseCore.EnsureSafeAncestry(protectedRoot);
+                PatchDatabaseOperationLeaseCore.EnsureSafeAncestry(Path.GetFullPath(stampPath), allowFileLeaf: true);
+                manifest = ReadManifest(source);
+                foreach (string rel in manifest)
+                {
+                    if (PathsOverlap(rel, "config/patch2") || PathsOverlap(rel, ".patch2-import"))
+                        throw new IOException("Bundled assets overlap separately owned patch database storage: " + rel);
+                    try
+                    {
+                        PatchDatabaseOperationLeaseCore.EnsureSafeAncestry(
+                            Path.GetFullPath(Path.Combine(targetRootDir, ToPlatformPath(rel))), allowFileLeaf: true);
+                    }
+                    catch (IOException) { safeStampProbes = false; }
+                }
+            }
             bool stampExisted = File.Exists(stampPath);
 
-            if (stampExisted && IsStampValid(stampPath, version, targetRootDir))
+            if (stampExisted && safeStampProbes && IsStampValid(stampPath, version, targetRootDir, preservePatchDatabase))
             {
                 return ExtractionResult.SkippedUpToDate;
             }
@@ -119,17 +148,16 @@ namespace FEBuilderGBA
             // partial extract cannot leave orphan files behind. Only the known
             // top-level asset roots are wiped (defensive — never the whole target
             // dir, which on Android holds unrelated app-private state).
-            var manifest = source.EnumerateAssetFiles()
-                .Select(NormalizeRelative)
-                .Where(p => p.Length > 0 && IsSafeRelativePath(p))
-                .Distinct()
-                .OrderBy(p => p, StringComparer.Ordinal)
-                .ToList();
+            manifest ??= ReadManifest(source);
 
             foreach (string root in TopLevelRoots(manifest))
             {
                 string rootDir = Path.Combine(targetRootDir, root);
-                if (Directory.Exists(rootDir))
+                if (preservePatchDatabase)
+                {
+                    PruneExceptProtected(Path.GetFullPath(rootDir), protectedRoot);
+                }
+                else if (Directory.Exists(rootDir))
                 {
                     Directory.Delete(rootDir, recursive: true);
                 }
@@ -170,6 +198,8 @@ namespace FEBuilderGBA
                 {
                     throw new IOException("Archive entry escapes the extraction root: " + rel);
                 }
+                if (preservePatchDatabase)
+                    PatchDatabaseOperationLeaseCore.EnsureSafeAncestry(destPath, allowFileLeaf: true);
 
                 string? destDir = Path.GetDirectoryName(destPath);
                 if (!string.IsNullOrEmpty(destDir))
@@ -191,6 +221,42 @@ namespace FEBuilderGBA
 
         // ---- internals ----
 
+        static List<string> ReadManifest(IAssetSource source)
+            => source.EnumerateAssetFiles().Select(NormalizeRelative)
+                .Where(p => p.Length > 0 && IsSafeRelativePath(p)).Distinct()
+                .OrderBy(p => p, StringComparer.Ordinal).ToList();
+
+        static bool PathsOverlap(string one, string other)
+        {
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return one.Equals(other, comparison) || one.StartsWith(other + "/", comparison) ||
+                other.StartsWith(one + "/", comparison);
+        }
+
+        static void PruneExceptProtected(string path, string protectedRoot)
+        {
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            if (path.Equals(protectedRoot, comparison)) return;
+            FileAttributes attributes;
+            try { attributes = File.GetAttributes(path); }
+            catch (FileNotFoundException) { return; }
+            catch (DirectoryNotFoundException) { return; }
+            bool ancestor = protectedRoot.StartsWith(path + Path.DirectorySeparatorChar, comparison);
+            bool directory = (attributes & FileAttributes.Directory) != 0;
+            bool link = (attributes & FileAttributes.ReparsePoint) != 0;
+            if (ancestor && (!directory || link))
+                throw new IOException("A protected patch database ancestor cannot be pruned.");
+            if (directory && !link)
+            {
+                foreach (string child in Directory.EnumerateFileSystemEntries(path))
+                    PruneExceptProtected(child, protectedRoot);
+            }
+            // Never delete a protected ancestor, even after all of its disjoint siblings are gone.
+            if (ancestor) return;
+            if (directory) Directory.Delete(path, false);
+            else File.Delete(path);
+        }
+
         /// <summary>
         /// A stamp is valid (skip) only when its version line matches AND every
         /// manifest-listed file still exists under the target root. A tampered or
@@ -201,7 +267,7 @@ namespace FEBuilderGBA
         /// stamp could otherwise "prove" completeness against files OUTSIDE the
         /// extraction root and incorrectly skip.
         /// </summary>
-        static bool IsStampValid(string stampPath, string version, string targetRootDir)
+        static bool IsStampValid(string stampPath, string version, string targetRootDir, bool preservePatchDatabase)
         {
             string[] lines;
             try
@@ -237,7 +303,14 @@ namespace FEBuilderGBA
                 string raw = lines[i].Trim();
                 if (!IsSafeStampEntry(raw)) return false;
                 string rel = NormalizeRelative(raw);
+                if (preservePatchDatabase && (PathsOverlap(rel, "config/patch2") || PathsOverlap(rel, ".patch2-import")))
+                    return false;
                 string p = Path.Combine(targetRootDir, ToPlatformPath(rel));
+                if (preservePatchDatabase)
+                {
+                    try { PatchDatabaseOperationLeaseCore.EnsureSafeAncestry(Path.GetFullPath(p), allowFileLeaf: true); }
+                    catch (IOException) { return false; }
+                }
                 if (!File.Exists(p)) return false;
             }
 

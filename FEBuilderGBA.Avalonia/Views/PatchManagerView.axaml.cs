@@ -5,8 +5,10 @@ using System.Threading.Tasks;
 using global::Avalonia.Controls;
 using global::Avalonia.Interactivity;
 using global::Avalonia.Threading;
+using global::Avalonia.VisualTree;
 using FEBuilderGBA.Avalonia.Services;
 using FEBuilderGBA.Avalonia.ViewModels;
+using FEBuilderGBA.Avalonia.Dialogs;
 
 namespace FEBuilderGBA.Avalonia.Views
 {
@@ -14,12 +16,20 @@ namespace FEBuilderGBA.Avalonia.Views
     {
         readonly PatchManagerViewModel _vm = new();
         bool _hasLoadedList;
+        bool _importing;
+        bool _gitRunning;
+        bool _importDialogOpen;
+        CancellationTokenSource? _importCancellation;
 
         public string ViewTitle => "Patch Manager";
         public new bool IsLoaded => _vm.IsLoaded;
         public EditorDescriptor Descriptor => new("Patch Manager", 1100, 650, SizeToContent: global::Avalonia.Controls.SizeToContent.WidthAndHeight);
         public event EventHandler? CloseRequested;
-        public void RequestClose() => CloseRequested?.Invoke(this, EventArgs.Empty);
+        public void RequestClose()
+        {
+            _importCancellation?.Cancel();
+            CloseRequested?.Invoke(this, EventArgs.Empty);
+        }
 
         public PatchManagerView()
         {
@@ -30,6 +40,8 @@ namespace FEBuilderGBA.Avalonia.Views
             ForceInstallButton.Click += OnForceInstallClick;
             UninstallButton.Click += OnUninstallClick;
             InitUpdatePatch2Button.Click += OnInitUpdatePatch2Click;
+            ImportPatchDatabaseButton.Click += OnImportPatchDatabaseClick;
+            CancelPatchDatabaseImportButton.Click += (_, _) => _importCancellation?.Cancel();
         }
 
         protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -42,23 +54,56 @@ namespace FEBuilderGBA.Avalonia.Views
             }
         }
 
-        void LoadPatches()
+        protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            // An Android modal temporarily detaches the underlying editor without closing it.
+            if (!_importDialogOpen) _importCancellation?.Cancel();
+            base.OnDetachedFromVisualTree(e);
+        }
+
+        bool LoadPatches(bool imported = false)
         {
             try
             {
-                _vm.LoadPatchList();
+                bool refreshed = true;
+                if (imported) refreshed = _vm.ReloadImportedPatchList();
+                else _vm.LoadPatchList();
                 PatchListBox.ItemsSource = _vm.FilteredPatches;
                 UpdateSummary();
                 InitUpdatePatch2Button.Content = _vm.Patch2ButtonText;
+                ClearDetails();
+                UpdateOperationControls();
                 // Surface the VM's load-time status (e.g. the Android patch2-unavailable
                 // empty-state notice, #1641) into the status label. Always assign so a
                 // cleared StatusMessage ("") also resets the label — never leaves a stale notice.
-                StatusMessageLabel.Text = _vm.StatusMessage;
+                StatusMessageLabel.Text = string.IsNullOrEmpty(App.PatchDatabaseRecoveryNotice)
+                    ? R._(_vm.StatusMessage) : App.PatchDatabaseRecoveryNotice;
+                return refreshed;
             }
             catch (Exception ex)
             {
                 Log.ErrorF("PatchManagerView.LoadPatches failed: {0}", ex.Message);
+                StatusMessageLabel.Text = R._("The patch database could not be refreshed: {0}", ex.Message);
+                return false;
             }
+        }
+
+        void ClearDetails()
+        {
+            foreach (var label in new[] { DetailName, DetailStatus, DetailAuthor, DetailType, DetailTags,
+                DetailDirectory, DetailDescription, DependencyWarningText })
+                label.Text = "";
+            DependencyWarningBorder.IsVisible = false;
+            UpdateActionButtons();
+        }
+
+        void UpdateOperationControls()
+        {
+            ImportPatchDatabaseButton.IsEnabled = !_importing && !_gitRunning && _vm.CanImportPatchDatabase;
+            InitUpdatePatch2Button.IsEnabled = !_importing && !_gitRunning;
+            CancelPatchDatabaseImportButton.IsVisible = _importing;
+            CancelPatchDatabaseImportButton.IsEnabled = _importing && _importCancellation?.IsCancellationRequested != true;
+            UpdateActionButtons();
         }
 
         void OnSearchTextChanged(object? sender, TextChangedEventArgs e)
@@ -114,14 +159,14 @@ namespace FEBuilderGBA.Avalonia.Views
 
         void UpdateActionButtons()
         {
-            bool canInstall = _vm.CanInstall;
+            bool canInstall = !_importing && _vm.CanInstall;
             bool hasUnmetDeps = _vm.SelectedPatch?.HasUnmetDependencies == true;
 
             // Disable normal Install if deps are unmet, but allow ForceInstall
             InstallButton.IsEnabled = canInstall && !hasUnmetDeps;
             ForceInstallButton.IsEnabled = canInstall && hasUnmetDeps;
             ForceInstallButton.IsVisible = canInstall && hasUnmetDeps;
-            UninstallButton.IsEnabled = _vm.CanUninstall;
+            UninstallButton.IsEnabled = !_importing && _vm.CanUninstall;
         }
 
         void OnInstallClick(object? sender, RoutedEventArgs e)
@@ -206,6 +251,9 @@ namespace FEBuilderGBA.Avalonia.Views
         /// </summary>
         async void OnInitUpdatePatch2Click(object? sender, RoutedEventArgs e)
         {
+            if (_importing || _gitRunning) return;
+            _gitRunning = true;
+            UpdateOperationControls();
             InitUpdatePatch2Button.IsEnabled = false;   // synchronous re-entrancy guard
             string baseDir = CoreState.BaseDirectory ?? AppDomain.CurrentDomain.BaseDirectory;
 
@@ -248,9 +296,93 @@ namespace FEBuilderGBA.Avalonia.Views
             }
             finally
             {
+                _gitRunning = false;
                 InitUpdatePatch2Button.Content = _vm.Patch2ButtonText;
-                InitUpdatePatch2Button.IsEnabled = true;
+                UpdateOperationControls();
             }
+        }
+
+        async void OnImportPatchDatabaseClick(object? sender, RoutedEventArgs e)
+        {
+            if (_importing || _gitRunning) return;
+            var identity = PatchDatabaseImportService.CaptureLoadedRom();
+            if (identity == null)
+            {
+                StatusMessageLabel.Text = PatchDatabaseImportService.AvailabilityMessage;
+                return;
+            }
+            _importing = true;
+            using var cancellation = new CancellationTokenSource();
+            _importCancellation = cancellation;
+            UpdateOperationControls();
+            try
+            {
+                _importDialogOpen = true;
+                global::Avalonia.Platform.Storage.IStorageFile? selected;
+                try { selected = await FileDialogHelper.OpenPatchDatabaseZipPick(TopLevel.GetTopLevel(this)); }
+                finally { _importDialogOpen = false; }
+                using (selected)
+                {
+                    if (selected == null || this.GetVisualRoot() == null)
+                    {
+                        StatusMessageLabel.Text = R._("Import cancelled. The previous database was not replaced.");
+                        return;
+                    }
+                    StatusMessageLabel.Text = R._("Validating the ZIP and staging the patch database…");
+                    var result = await PatchDatabaseImportService.ImportAsync(selected, identity,
+                        CoreState.BaseDirectory, ConfirmImport, cancellation.Token);
+                    if (result.Imported)
+                    {
+                        bool refreshed = identity.IsCurrent && this.GetVisualRoot() != null && LoadPatches(imported: true);
+                        StatusMessageLabel.Text = refreshed
+                            ? R._("Imported patch database for {0}; list refreshed. No patches were applied. Restart recommended for cached data.", identity.Version)
+                            : R._("Imported patch database for {0}, but the list was not refreshed. Reopen Patch Manager. No patches were applied.", identity.Version);
+                        if (!string.IsNullOrWhiteSpace(result.Message))
+                            StatusMessageLabel.Text += "\n" + result.Message;
+                    }
+                    else StatusMessageLabel.Text = result.Message;
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessageLabel.Text = R._("Patch database import failed: {0}", ex.Message);
+            }
+            finally
+            {
+                _importCancellation = null;
+                _importing = false;
+                UpdateOperationControls();
+            }
+        }
+
+        async Task<bool> ConfirmImport(PatchDatabaseImportCore.PreparedImport prepared)
+        {
+            _importDialogOpen = true;
+            try
+            {
+                var result = await WindowManager.Instance.OpenModal<MessageBoxContent, MessageBoxResult>(
+                    TopLevel.GetTopLevel(this) as Window, content =>
+                    {
+                        content.Configure(PatchDatabaseImportService.ConfirmationMessage(prepared),
+                            R._("Import Patch Database ZIP"), MessageBoxMode.YesNo);
+                        SetDefaultImportConfirmation(content);
+                    });
+                if (this.GetVisualRoot() == null) _importCancellation?.Cancel();
+                return result == MessageBoxResult.Yes;
+            }
+            finally { _importDialogOpen = false; }
+        }
+
+        internal static void SetDefaultImportConfirmation(MessageBoxContent content)
+        {
+            var no = content.FindControl<Button>("NoButton")!;
+            var yes = content.FindControl<Button>("YesButton")!;
+            no.IsDefault = true;
+            no.IsCancel = true;
+            no.TabIndex = 0;
+            yes.IsDefault = false;
+            yes.TabIndex = 1;
+            content.AttachedToVisualTree += (_, _) => Dispatcher.UIThread.Post(() => no.Focus());
         }
 
         static string LastLogLine(string log)

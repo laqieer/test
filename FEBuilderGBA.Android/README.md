@@ -68,6 +68,12 @@ project's restore + build. A successful build emits
   failures.
 - ✅ **The SAF stream seam (#1124) is done.** ROM load/save uses stream APIs
   suitable for Android storage.
+- **Offline patch-database ZIP import:** load a ROM and use Patch Manager's
+  **Import Patch Database ZIP** action. SAF streams are validated and staged
+  into the loaded version's app-private canonical library; confirmation
+  defaults to No. No patches are applied. Imported data is preserved across
+  relaunch and bundled-config refresh. See
+  [format, limits and recovery](../docs/ANDROID.md#52-offline-patch-database-zip-import).
 - ⚠️ **Interactive ROM editing remains on-device-unvalidated/preview.** The boot
   smoke does not drive the system picker, ROM open/save interaction, editors,
   touch UX, or dialogs. See
@@ -81,6 +87,10 @@ project's restore + build. A successful build emits
 - `config/` asset bundling + first-run extraction (#1123) is exercised by the
   #1640 boot smoke. The #1124 SAF stream seam is done, but the boot smoke does
   not drive the system picker or ROM open/save/editor interaction.
-- `config/patch2` is **not bundled** for Android (deferred): it is a
-  runtime-installed git submodule (hundreds of MB); on-device patch delivery is
-  tracked under #1070. See [docs/ANDROID.md §5](../docs/ANDROID.md#5-config-packaging-for-an-apk).
+- `config/patch2` is **not bundled** for Android. Offline ZIP import is separate
+  from Git/HTTP delivery, which remains unavailable; FE-Repo and unsupported
+  EA/unknown patch execution are not enabled by import.
+- The dedicated `android-patch-import-smoke` workflow job exercises actual
+  SAF/import/relaunch/config-upgrade behavior with generated fixtures and a
+  tablet-sized API-34 emulator. Its report/screenshots need independent review;
+  ordinary boot/parity or fake-adb test success does not establish import proof.

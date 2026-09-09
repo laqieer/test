@@ -26,6 +26,83 @@ namespace FEBuilderGBA.Core.Tests
     [Collection("SharedState")]
     public class PatchTextRefScannerGrepTests
     {
+        [Theory]
+        [InlineData("text")]
+        [InlineData("song")]
+        [InlineData("pointer")]
+        [InlineData("count")]
+        [InlineData("condition")]
+        public void AuditedSiblingOperandsReachEveryActualTextReferenceReader(string role)
+        {
+            WithIsolatedPatchDir((rom, versionRoot) =>
+            {
+                byte[] pattern = { 0xDE, 0xAD, 0xBE, 0xEF };
+                pattern.CopyTo(rom.Data, 0x6000);
+                pattern.CopyTo(rom.Data, 0x7002);
+                rom.Data[0x500] = 0x99;
+                rom.Data[0x501] = 0x42;
+                rom.Data[0x6004] = rom.Data[0x7000] = 0x34;
+                rom.Data[0x6005] = rom.Data[0x7001] = 0x12;
+                string condition = "PATCHED_IF:0x500=0x99 0x42";
+                string fields = role switch
+                {
+                    "text" => "TYPE=ADDR\nADDRESS_TYPE=TEXT\nADDRESS=$FGREP4ENDA ../shared/pattern.bin",
+                    "song" => "TYPE=ADDR\nADDRESS_TYPE=SONG\nADDRESS=$FGREP4ENDA ../shared/pattern.bin",
+                    "pointer" => "TYPE=STRUCT\nPOINTER=$FGREP4ENDA ../shared/pattern.bin\nDATASIZE=2\nDATACOUNT=1\nW0:TEXT=Text",
+                    "count" => "TYPE=STRUCT\nADDRESS=0x7000\nDATASIZE=2\nDATACOUNT=$FGREP1 ../shared/pattern.bin\nW0:TEXT=Text",
+                    _ => "TYPE=ADDR\nADDRESS_TYPE=TEXT\nADDRESS=0x7000",
+                };
+                if (role == "pointer") rom.write_p32(0x6004, 0x7000);
+                if (role == "condition") condition = "PATCHED_IF:$FGREP4 ../shared/pattern.bin=0xDE 0xAD";
+                string dir = WritePatch(versionRoot, "nested", fields + "\n" + condition);
+                string definition = Path.Combine(dir, "PATCH_TEST.txt");
+                string patternPath = Path.Combine(versionRoot, "shared", "pattern.bin");
+                Directory.CreateDirectory(Path.GetDirectoryName(patternPath)!);
+                File.WriteAllBytes(patternPath, pattern);
+                var audit = PatchDatabaseMetadataAuditCore.Audit(versionRoot, new Dictionary<string, long>
+                {
+                    ["nested/PATCH_TEST.txt"] = new FileInfo(definition).Length,
+                    ["shared/pattern.bin"] = pattern.Length,
+                });
+                Assert.Single(audit.References);
+                var ids = new HashSet<uint>();
+                var songs = new HashSet<uint>();
+                PatchTextRefScannerCore.CollectUsedRefs(rom, ids, songs);
+                if (role == "song") Assert.Contains(0x34u, songs);
+                else Assert.Contains(0x1234u, ids);
+            });
+        }
+
+        [Theory]
+        [InlineData("ADDRESS=$FGREP4 {0}")]
+        [InlineData("POINTER=$FGREP4 {0}")]
+        [InlineData("DATACOUNT=$FGREP4 {0}")]
+        [InlineData("PATCHED_IF:$FGREP4 {0}=0xDE 0xAD")]
+        public void RejectedTextReferenceOperandsNeverReachSharedResolverFileReads(string format)
+        {
+            WithIsolatedPatchDir((rom, versionRoot) =>
+            {
+                const string operand = @"\\unused.invalid\share\pattern.bin";
+                string dir = WritePatch(versionRoot, "nested", "TYPE=STRUCT\n" + string.Format(format, operand));
+                string definition = Path.Combine(dir, "PATCH_TEST.txt");
+                int consumers = 0, existsCalls = 0, readCalls = 0;
+                Assert.Throws<InvalidDataException>(() =>
+                {
+                    PatchDatabaseMetadataAuditCore.Audit(versionRoot, new Dictionary<string, long>
+                    {
+                        ["nested/PATCH_TEST.txt"] = new FileInfo(definition).Length,
+                    });
+                    consumers++;
+                    _ = PatchMacroAddressResolverCore.ResolveWithFileReadsForTest(rom, "$FGREP4 " + operand, dir, 0x100,
+                        _ => { existsCalls++; return false; },
+                        _ => { readCalls++; return Array.Empty<byte>(); });
+                });
+                Assert.Equal(0, consumers);
+                Assert.Equal(0, existsCalls);
+                Assert.Equal(0, readCalls);
+            });
+        }
+
         // ---- ROM builder (mirrors PatchMacroAddressResolverCoreTests) -------
         // Minimal synthetic FE8U ROM. LoadLow requires >= 0x1000000 (16 MB) for
         // BE8E01. Zero-filled so planted patterns are unique.

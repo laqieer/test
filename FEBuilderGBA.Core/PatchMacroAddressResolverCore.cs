@@ -44,6 +44,14 @@ namespace FEBuilderGBA
         /// DATACOUNT passes struct_address).</param>
         /// <returns>ROM offset, or <see cref="U.NOT_FOUND"/> on any failure.</returns>
         public static uint Resolve(ROM rom, string addrstring, string basedir, uint startOffset = 0x100)
+            => ResolveCore(rom, addrstring, basedir, startOffset, File.Exists, File.ReadAllBytes);
+
+        internal static uint ResolveWithFileReadsForTest(ROM rom, string addrstring, string basedir, uint startOffset,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
+            => ResolveCore(rom, addrstring, basedir, startOffset, fileExists, readFile);
+
+        static uint ResolveCore(ROM rom, string addrstring, string basedir, uint startOffset,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             try
             {
@@ -100,7 +108,7 @@ namespace FEBuilderGBA
                     {
                         // GREP or FGREP — exact byte match
                         byte[] need = (variant == "F")
-                            ? MakeGrepDataFromFile(value, basedir)
+                            ? MakeGrepDataFromFile(value, basedir, fileExists, readFile)
                             : MakeGrepDataFromHex(value);
                         if (need.Length == 0) return U.NOT_FOUND;
                         if (endMode == "ENDA")
@@ -163,7 +171,8 @@ namespace FEBuilderGBA
 
         // Read raw bytes from the file named in the FGREP macro.
         // Value format: "FGREP<align> <filename>"
-        private static byte[] MakeGrepDataFromFile(string value, string basedir)
+        private static byte[] MakeGrepDataFromFile(string value, string basedir,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             int firstSp = value.IndexOf(' ');
             if (firstSp < 0) return Array.Empty<byte>();
@@ -173,8 +182,8 @@ namespace FEBuilderGBA
             string fullpath = Path.Combine(basedir, filename);
             try
             {
-                if (!File.Exists(fullpath)) return Array.Empty<byte>();
-                return File.ReadAllBytes(fullpath);
+                if (!fileExists(fullpath)) return Array.Empty<byte>();
+                return readFile(fullpath);
             }
             catch
             {

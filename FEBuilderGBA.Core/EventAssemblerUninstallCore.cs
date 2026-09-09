@@ -791,8 +791,16 @@ namespace FEBuilderGBA
         /// the rebuild-producer TYPE=BIN arm, s2pf-15.
         /// </summary>
         internal static byte[] ReadMod(string[] sp, string filename, out bool[] isSkip, ROM rom)
+            => ReadModCore(sp, filename, out isSkip, rom, System.IO.File.Exists, System.IO.File.ReadAllBytes);
+
+        internal static byte[] ReadModWithFileReadsForTest(string[] sp, string filename, out bool[] isSkip, ROM rom,
+            Func<string, bool> fileExists, Func<string, byte[]> readBytes)
+            => ReadModCore(sp, filename, out isSkip, rom, fileExists, readBytes);
+
+        static byte[] ReadModCore(string[] sp, string filename, out bool[] isSkip, ROM rom,
+            Func<string, bool> fileExists, Func<string, byte[]> readBytes)
         {
-            if (string.IsNullOrEmpty(filename) || !System.IO.File.Exists(filename))
+            if (string.IsNullOrEmpty(filename) || !fileExists(filename))
             {//WF :4311-4315 — missing file: empty bin + empty mask.
                 isSkip = new bool[0];
                 return new byte[0];
@@ -803,7 +811,7 @@ namespace FEBuilderGBA
             // and silently hide a corrupt/locked installed BIN file as a zero-length mapping
             // (Copilot plan-review #1261 s2pf-15). A genuine read error propagates exactly as
             // it does in WF.
-            byte[] b = System.IO.File.ReadAllBytes(filename);
+            byte[] b = readBytes(filename);
 
             // WF :4320 — chaddr = U.atoi0x(U.at(sp, 2)); the address the block was relocated
             // to, so MakeMaskAddress can mask the LDR-pointer words that depend on it.

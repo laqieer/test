@@ -27,6 +27,84 @@ namespace FEBuilderGBA.Core.Tests
     [Collection("SharedState")]
     public class PatchMacroAddressResolverCoreTests
     {
+        [Theory]
+        [InlineData(@"\\unused.invalid\share\pattern.bin")]
+        [InlineData("//unused.invalid/share/pattern.bin")]
+        [InlineData("C:/outside/pattern.bin")]
+        [InlineData("../../outside.bin")]
+        public void ImportAuditRejectsExternalOperandsBeforeTheRealResolverAndFileSpies(string operand)
+        {
+            string root = Path.Combine(AppContext.BaseDirectory, "TestResults", "macro-audit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            int resolverCalls = 0, existsCalls = 0, readCalls = 0;
+            try
+            {
+                string descriptor = Path.Combine(root, "PATCH_x.txt");
+                File.WriteAllText(descriptor, "TYPE=BIN\nPATCHED_IF:$FGREP4 " + operand + "=0xAA");
+                var manifest = new System.Collections.Generic.Dictionary<string, long>
+                {
+                    ["PATCH_x.txt"] = new FileInfo(descriptor).Length,
+                };
+                Assert.Throws<InvalidDataException>(() =>
+                {
+                    PatchDatabaseMetadataAuditCore.Audit(root, manifest);
+                    resolverCalls++;
+                    _ = PatchMacroAddressResolverCore.ResolveWithFileReadsForTest(MakeRom(), "$FGREP4 " + operand,
+                        root, 0x100, _ => { existsCalls++; return false; },
+                        _ => { readCalls++; return Array.Empty<byte>(); });
+                });
+                Assert.Equal(0, resolverCalls);
+                Assert.Equal(0, existsCalls);
+                Assert.Equal(0, readCalls);
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
+        [Theory]
+        [InlineData("$FGREP4", 0x2000u)]
+        [InlineData("$FGREP4ENDA", 0x2004u)]
+        [InlineData("$FGREP4END", 0x2004u)]
+        public void AuditedInternalSiblingUsesTheActualFileBackedResolver(string macro, uint expected)
+        {
+            string root = Path.Combine(AppContext.BaseDirectory, "TestResults", "macro-sibling-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(root, "nested"));
+            Directory.CreateDirectory(Path.Combine(root, "shared"));
+            try
+            {
+                string descriptor = Path.Combine(root, "nested", "PATCH_x.txt");
+                string pattern = Path.Combine(root, "shared", "pattern.bin");
+                byte[] data = { 0xAA, 0xBB, 0xCC, 0xDD };
+                File.WriteAllBytes(pattern, data);
+                File.WriteAllText(descriptor, "PATCHED_IF:" + macro + " ../shared/pattern.bin=0xAA");
+                PatchDatabaseMetadataAuditCore.Audit(root, new System.Collections.Generic.Dictionary<string, long>
+                {
+                    ["nested/PATCH_x.txt"] = new FileInfo(descriptor).Length,
+                    ["shared/pattern.bin"] = data.Length,
+                });
+                ROM rom = MakeRom();
+                data.CopyTo(rom.Data, 0x2000);
+                int existsCalls = 0, readCalls = 0;
+                uint actual = PatchMacroAddressResolverCore.ResolveWithFileReadsForTest(rom,
+                    macro + " ../shared/pattern.bin", Path.GetDirectoryName(descriptor)!, 0x100,
+                    path =>
+                    {
+                        existsCalls++;
+                        Assert.Equal(pattern, Path.GetFullPath(path));
+                        return true;
+                    },
+                    path =>
+                    {
+                        readCalls++;
+                        Assert.Equal(pattern, Path.GetFullPath(path));
+                        return data;
+                    });
+                Assert.Equal(expected, actual);
+                Assert.Equal(1, existsCalls);
+                Assert.Equal(1, readCalls);
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
         // ---- ROM builder ---------------------------------------------------
 
         // Build a minimal synthetic FE8U ROM. LoadLow requires >= 0x1000000 (16 MB)

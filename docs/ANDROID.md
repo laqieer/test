@@ -286,8 +286,8 @@ The `config/` directory (game data, scripts, names, translations) is **required
 at runtime**: `FEBuilderGBA.Core/PathUtil.cs:39` resolves `config/<subpath>`
 relative to `CoreState.BaseDirectory`, which `App.axaml.cs` sets to
 `AppDomain.CurrentDomain.BaseDirectory` on desktop. On desktop,
-`FEBuilderGBA.Avalonia.csproj` copies `config/**` (excluding `patch2`) as loose
-files beside the exe.
+`FEBuilderGBA.Avalonia.csproj` copies `config/**`, including the initialized
+patch library but excluding its Git metadata, as loose files beside the exe.
 
 **Inside an APK there is no "beside the exe" loose-file layout.** The Android
 head therefore ships + extracts config:
@@ -322,11 +322,10 @@ head therefore ships + extracts config:
 
 ### 5.1 patch2 / FE-Repo on-device delivery decision (#1641)
 
-**Decision: the binary-patch library (`config/patch2`) and the FE-Repo
-graphics/music resource submodules are DESKTOP-ONLY on Android for now —
-documented limitation, not on-device delivery.** This is a deliberate, honest
-scoping decision (acceptance of #1641's "document the limitation" path), not an
-oversight.
+**Git-based delivery remains desktop-only.** Android does not initialize or
+update patch2/FE-Repo through Git, and neither database is bundled in the APK.
+The separate offline patch-database ZIP fallback in §5.2 does not change that
+predicate or provide FE-Repo, HTTP delivery, or additional patch-execution support.
 
 **Why they are not delivered on Android:**
 
@@ -334,12 +333,9 @@ oversight.
   are runtime-installed git submodules that the app fetches on demand via the
   in-process `GitUtil`. Android has no in-process git, so the desktop delivery
   path simply does not exist on a device.
-- **APK packaging / submodule size.** `config/patch2` and FE-Repo are large
-  (the patch library is hundreds of MB; FE-Repo is a large graphics/music
-  corpus). Bundling either as an `AndroidAsset` inside the APK would bloat the
-  download enormously and is not how the desktop build delivers them either
-  (the desktop ships them out-of-band via git, see §2 of `docs/RELEASE.md` and
-  the `config/patch2/` empty placeholders).
+- **APK packaging / submodule size.** Neither library is included as an
+  Android asset. Desktop portable bundles can include patch2; the desktop Git
+  setup/update path remains separate from Android's offline import.
 - **Storage model differs.** The desktop relies on a "loose files beside the
   exe" layout; Android uses app-private `Context.FilesDir` + SAF (`content://`)
   storage with no equivalent loose-file tree (see §4 and §5 above). Even a
@@ -348,12 +344,10 @@ oversight.
 
 **What the user sees in-app today (the empty-state):**
 
-- **Patch Manager** — the patch list resolves empty on Android (no
-  `config/patch2/{version}/` on device). Instead of a silent blank list, the
-  manager now shows the canonical Android notice
-  (`AndroidResourceNoticeCore.PatchLibraryUnavailableMessage`): patch2 is not
-  available on Android yet, ships on desktop builds via git, and on-device
-  delivery is planned under #1070.
+- **Patch Manager** — an empty library prompts the user to choose **Import
+  Patch Database ZIP** for the loaded ROM. The notice still explains that
+  Android cannot initialize/update through Git and that the APK contains no
+  patch data.
 - **FE-Repo Resource Browser** — when the submodule is absent the browser
   already surfaces an actionable empty-state. On desktop that is the
   `git submodule update --init …` hint (#1380); on Android — where that command
@@ -388,6 +382,62 @@ known-gaps table in `docs/RELEASE.md` §7.
 > boot-smoke**: `MainActivity.OnCreate` runs the extraction and rethrows on
 > failure (fail-fast), so a bad extract surfaces as a boot crash the boot-smoke
 > test catches.
+
+### 5.2 Offline patch-database ZIP import
+
+In Avalonia, load a ROM, open **Patch Manager**, and choose **Import Patch
+Database ZIP**. Select a ZIP with exactly one direct version directory
+(`FE6`, `FE7J`, `FE7U`, `FE8J`, or `FE8U`) or one wrapper above it. The importer
+selects the loaded ROM's canonical version; it is not FE8U-only. Other safe
+version roots are not installed.
+
+The SAF document is opened as a read-only stream; no local path or seekable
+provider is required. Core owns bounded local spooling, archive/metadata
+validation and staging. Confirmation defaults to **No** and identifies the
+version, target, file/byte counts and whether an existing library will be
+replaced. Import never applies a patch or edits the ROM. EA and unknown patch
+types retain their existing unsupported/unknown behavior.
+
+The canonical destination is
+`<BaseDirectory>/config/patch2/<version>` (Android's canonical app-private
+`FilesDir`). Imported libraries survive relaunch and bundled-config version
+refresh. Desktop import requires a writable, non-Git-owned application tree:
+Git worktrees, repositories, submodules, unsafe ancestry and concurrent
+cooperating import/Git operations are refused. Run a portable desktop build
+outside a source checkout rather than modifying the checkout's database.
+
+Supported archives are single-disk stored/deflate ZIPs, including bounded ZIP64
+and checked streaming data descriptors. Limits include a 1-GiB input, 100,000
+archive records, 50,000 selected files, 100,000 distinct materialized paths,
+128 MiB per expanded file and 2 GiB selected expanded data. Names, collisions,
+entry types, compressed extents, actual bytes and CRC are checked. Metadata
+references must remain within the selected version and satisfy bounded
+text/reference-graph limits; ambiguous language/path interpretations, missing
+dependencies, cycles and unsafe operands are rejected. A ZIP is not an
+endorsement of its contents, and imported scripts/binaries are never executed
+by the importer.
+
+Preparation can be cancelled without replacing the old library. Promotion
+holds a base-wide lease and preserves the old directory until a durable commit
+record exists. Recovery/cleanup runs with ownership and inventory checks; an
+uncertain state is retained with an explicit warning, not deleted. Preserve
+any reported `.patch2-import/<operation-id>` workspace for diagnosis.
+
+The `android-patch-import-smoke` job in
+[`android-emulator-parity.yml`](../.github/workflows/android-emulator-parity.yml)
+uses a fresh API-34 x86_64 AVD, ordinary Debug APKs and generated legal fixtures.
+Its self-generated ROM uses Core's version-specific pointer APIs and a minimal
+terminating Huffman tree; it contains no commercial ROM bytes. Before a local
+run, validate `SyntheticPatchImportFixtureTests` in both Debug and Release, then
+build `scripts/SyntheticProofFixtures/SyntheticProofFixtures.csproj` in Debug.
+The runner invokes that prebuilt generator (no implicit build/restore), verifies
+its receipt against the generated bytes, and retains source-ROM/ZIP invariance
+checks. Header-only ROMs are insufficient for Debug text initialization.
+It drives DocumentsUI/SAF, declines confirmation, imports, rejects a bad ZIP,
+relaunches, and installs a higher application version to exercise real config
+refresh. Its tablet-viewport screenshots and hash report require independent
+inspection; fake-adb tests and the separate boot/parity jobs are not import
+proof. Broader ROM-editing and phone-layout coverage remain preview work.
 
 ---
 

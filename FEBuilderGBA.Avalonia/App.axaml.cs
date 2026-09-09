@@ -175,6 +175,9 @@ namespace FEBuilderGBA.Avalonia
             AvaloniaXamlLoader.Load(this);
         }
 
+        internal static string PatchDatabaseRecoveryNotice { get; private set; } = "";
+        internal static void ClearPatchDatabaseRecoveryNotice() => PatchDatabaseRecoveryNotice = "";
+
         public override void OnFrameworkInitializationCompleted()
         {
             // Register code pages for Shift-JIS, etc.
@@ -188,6 +191,12 @@ namespace FEBuilderGBA.Avalonia
             CoreState.BaseDirectory = baseDir;
             CoreState.Services = new AvaloniaAppServices();
             CoreState.ImageService = new SkiaImageService();
+
+            var recovery = PatchDatabaseImportCore.RecoverPending(baseDir);
+            PatchDatabaseRecoveryNotice = recovery.Success ? "" :
+                R._("Patch database recovery needs attention: {0}", recovery.Message);
+            if (!string.IsNullOrEmpty(PatchDatabaseRecoveryNotice))
+                Log.Error(PatchDatabaseRecoveryNotice);
 
             // Wire headless caches
             CoreState.CommentCache = new HeadlessEtcCache();

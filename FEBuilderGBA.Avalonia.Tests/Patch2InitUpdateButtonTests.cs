@@ -10,6 +10,7 @@ using Avalonia.Headless.XUnit;
 using FEBuilderGBA;
 using FEBuilderGBA.Avalonia.ViewModels;
 using FEBuilderGBA.Avalonia.Views;
+using FEBuilderGBA.Avalonia.Dialogs;
 using Xunit;
 
 namespace FEBuilderGBA.Avalonia.Tests
@@ -59,6 +60,31 @@ namespace FEBuilderGBA.Avalonia.Tests
 
     public class Patch2InitUpdateViewTests
     {
+        [AvaloniaFact]
+        public void OfflineImportConfirmationDefaultsToNoWithoutChangingOtherDialogs()
+        {
+            var dialog = new MessageBoxContent("Replacement consent", "Import", MessageBoxMode.YesNo);
+            PatchManagerView.SetDefaultImportConfirmation(dialog);
+            Assert.Equal(MessageBoxResult.No, dialog.Result);
+            Assert.True(dialog.FindControl<Button>("NoButton")!.IsDefault);
+            Assert.True(dialog.FindControl<Button>("NoButton")!.IsCancel);
+            Assert.False(dialog.FindControl<Button>("YesButton")!.IsDefault);
+            Assert.True(dialog.FindControl<Button>("NoButton")!.TabIndex < dialog.FindControl<Button>("YesButton")!.TabIndex);
+        }
+
+        [AvaloniaFact]
+        public void PatchManagerView_HasSeparateOfflineImportAndCancellationControls()
+        {
+            var view = new PatchManagerView();
+            var import = view.FindControl<Button>("ImportPatchDatabaseButton");
+            var cancel = view.FindControl<Button>("CancelPatchDatabaseImportButton");
+            Assert.NotNull(import);
+            Assert.NotNull(cancel);
+            Assert.False(import!.IsEnabled);
+            Assert.False(cancel!.IsVisible);
+            Assert.NotNull(view.FindControl<Button>("InitUpdatePatch2Button"));
+        }
+
         [AvaloniaFact]
         public void PatchManagerView_HasInitUpdateButton()
         {

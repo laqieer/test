@@ -12,8 +12,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.IO.Compression;
+using System.Text;
+using System.Threading.Tasks;
+using global::Avalonia.Controls;
+using global::Avalonia.Headless.XUnit;
+using global::Avalonia.Threading;
 using FEBuilderGBA;
 using FEBuilderGBA.Avalonia.ViewModels;
+using FEBuilderGBA.Avalonia.Views;
 using Xunit;
 
 namespace FEBuilderGBA.Avalonia.Tests
@@ -21,6 +28,134 @@ namespace FEBuilderGBA.Avalonia.Tests
     [Collection("SharedState")]
     public class PatchManagerFilterTests
     {
+        [Fact]
+        public async Task ImportedLibrarySupportsActualLegacyReloadSelectionAndInstalledFilter()
+        {
+            await WithImportedLibrary((rom, root) =>
+            {
+                var vm = new PatchManagerViewModel();
+                vm.LoadPatchList();
+                Assert.Equal(2, vm.TotalCount);
+                vm.FilterText = "!";
+                var installed = Assert.Single(vm.FilteredPatches);
+                Assert.Equal("Contained pattern", installed.Name);
+                Assert.Equal(PatchMetadataCore.PatchStatus.Installed, installed.Status);
+                vm.SelectedPatch = installed;
+                rom.LoadLow("reloaded-synthetic.gba", new byte[0x1000000], "BE8E01");
+                var refresh = typeof(PatchManagerViewModel).GetMethod("RefreshSelectedPatchStatus",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.NotNull(refresh);
+                refresh.Invoke(vm, null);
+                Assert.Equal(PatchMetadataCore.PatchStatus.NotInstalled, installed.Status);
+                vm.FilterText = "";
+                vm.LoadPatchList();
+                var unsupported = Assert.Single(vm.FilteredPatches, p => p.Type == "EA");
+                Assert.False(unsupported.IsInstallTypeSupported);
+                return Task.CompletedTask;
+            });
+        }
+
+        [AvaloniaFact]
+        public async Task ImportedLibraryIsActuallyReloadedWhenThePatchViewReopens()
+        {
+            await WithImportedLibrary((rom, root) =>
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    var view = new PatchManagerView();
+                    var host = new Window { Content = view };
+                    try
+                    {
+                        host.Show();
+                        Dispatcher.UIThread.RunJobs();
+                        var list = view.FindControl<ListBox>("PatchListBox")!;
+                        Assert.Equal(2, list.ItemCount);
+                        var installed = list.Items.Cast<PatchEntry>().Single(p => p.Name == "Contained pattern");
+                        Assert.Equal(PatchMetadataCore.PatchStatus.Installed, installed.Status);
+                        list.SelectedItem = installed;
+                        Dispatcher.UIThread.RunJobs();
+                        Assert.Equal("Installed", view.FindControl<TextBlock>("DetailStatus")!.Text);
+                    }
+                    finally { host.Close(); }
+                }
+                return Task.CompletedTask;
+            });
+        }
+
+        [Fact]
+        public async Task RejectedExternalMetadataNeverBecomesTheLibraryReopenedByTheViewModel()
+        {
+            await WithImportedLibrary(async (rom, root) =>
+            {
+                string definition = Path.Combine(root, "config", "patch2", "FE8U", "nested", "PATCH_bin.txt");
+                byte[] before = File.ReadAllBytes(definition);
+                using var zip = CreateImportZip(("FE8U/PATCH_bad.txt",
+                    Encoding.UTF8.GetBytes("TYPE=BIN\nPATCHED_IF:$FGREP4 \\\\unused.invalid\\share\\pattern.bin=0xAA")));
+                PatchDatabaseImportCore.PreparedImport? unexpected = null;
+                try
+                {
+                    await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    {
+                        unexpected = await PatchDatabaseImportCore.PrepareForTestAsync(zip, root, "FE8U", default, _ => false);
+                    });
+                }
+                finally { unexpected?.Dispose(); }
+                Assert.Equal(before, File.ReadAllBytes(definition));
+                var reopened = new PatchManagerViewModel();
+                reopened.LoadPatchList();
+                Assert.Equal(2, reopened.TotalCount);
+                Assert.Contains(reopened.FilteredPatches,
+                    patch => patch.Name == "Contained pattern" && patch.Status == PatchMetadataCore.PatchStatus.Installed);
+            });
+        }
+
+        static async Task WithImportedLibrary(Func<ROM, string, Task> body)
+        {
+            string root = Path.Combine(AppContext.BaseDirectory, "TestResults", "imported-view-" + Guid.NewGuid().ToString("N"));
+            var savedRom = CoreState.ROM;
+            string savedBase = CoreState.BaseDirectory;
+            string savedLanguage = CoreState.Language;
+            Directory.CreateDirectory(root);
+            try
+            {
+                var rom = MakeFe8uRom(data => new byte[] { 0xAA, 0xBB, 0xCC, 0xDD }.CopyTo(data, 0x2000));
+                CoreState.ROM = rom;
+                CoreState.BaseDirectory = root;
+                CoreState.Language = "en";
+                using var zip = CreateImportZip(
+                    ("FE8U/nested/PATCH_bin.txt", Encoding.UTF8.GetBytes(
+                        "NAME=Contained pattern\nTYPE=BIN\nPATCHED_IF:$FGREP4 ../shared/pattern.bin=0xAA 0xBB\nBIN:0x3000=../shared/payload.bin")),
+                    ("FE8U/nested/PATCH_ea.txt", Encoding.UTF8.GetBytes(
+                        "NAME=Unsupported EA\nTYPE=EA\nPATCHED_IF:0x500=0x99 0x42")),
+                    ("FE8U/shared/pattern.bin", new byte[] { 0xAA, 0xBB, 0xCC, 0xDD }),
+                    ("FE8U/shared/payload.bin", new byte[] { 0x33, 0x44 }));
+                using (var prepared = await PatchDatabaseImportCore.PrepareForTestAsync(zip, root, "FE8U", default, _ => false))
+                    Assert.True(prepared.Commit().Success);
+                Assert.Equal(0, rom.Data[0x3000]);
+                await body(rom, root);
+            }
+            finally
+            {
+                CoreState.ROM = savedRom;
+                CoreState.BaseDirectory = savedBase;
+                CoreState.Language = savedLanguage;
+                Directory.Delete(root, true);
+            }
+        }
+
+        static MemoryStream CreateImportZip(params (string Name, byte[] Bytes)[] files)
+        {
+            var stream = new MemoryStream();
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, true))
+                foreach (var file in files)
+                {
+                    using var output = zip.CreateEntry(file.Name, CompressionLevel.NoCompression).Open();
+                    output.Write(file.Bytes);
+                }
+            stream.Position = 0;
+            return stream;
+        }
+
         static ROM MakeFe8uRom(Action<byte[]>? seed)
         {
             var data = new byte[0x1000000];

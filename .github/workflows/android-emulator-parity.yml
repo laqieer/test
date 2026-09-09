@@ -298,3 +298,77 @@ jobs:
             boot-logcat-${{ matrix.arch }}.txt
             boot-dumpsys-${{ matrix.arch }}.txt
           if-no-files-found: warn
+
+  android-patch-import-smoke:
+    name: Android SAF Patch Import (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test import proof runner with fake adb
+        run: bash scripts/tests/android-patch-import-smoke-test.sh
+
+      - name: Init build-required submodules
+        run: git submodule update --init config/patch2 tools/Event-Assembler tools/ColorzCore resources/fe-info
+
+      - name: Setup .NET 10.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Validate exact synthetic fixture in Debug and Release
+        run: |
+          dotnet test FEBuilderGBA.Avalonia.Tests/FEBuilderGBA.Avalonia.Tests.csproj -c Debug -warnaserror --filter FullyQualifiedName~SyntheticPatchImportFixtureTests
+          dotnet test FEBuilderGBA.Avalonia.Tests/FEBuilderGBA.Avalonia.Tests.csproj -c Release -warnaserror --filter FullyQualifiedName~SyntheticPatchImportFixtureTests
+          dotnet build scripts/SyntheticProofFixtures/SyntheticProofFixtures.csproj -c Debug -warnaserror
+
+      - name: Install android workload
+        run: dotnet workload install android
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build ordinary Debug APKs for same-app upgrade proof
+        # Debug run-as permits assertions under the normal app UID. No manifest
+        # backdoor or production test endpoint is added; Release builds remain above.
+        run: |
+          mkdir -p TestResults/patch-import-apks
+          dotnet build FEBuilderGBA.Android/FEBuilderGBA.Android.csproj -c Debug -warnaserror -p:EnableAndroidTarget=true -p:RuntimeIdentifier=android-x64 -p:EmbedAssembliesIntoApk=true -p:ApplicationVersion=1
+          cp FEBuilderGBA.Android/bin/Debug/net10.0-android/android-x64/com.laqieer.febuildergba-Signed.apk TestResults/patch-import-apks/base.apk
+          dotnet build FEBuilderGBA.Android/FEBuilderGBA.Android.csproj -c Debug -warnaserror -p:EnableAndroidTarget=true -p:RuntimeIdentifier=android-x64 -p:EmbedAssembliesIntoApk=true -p:ApplicationVersion=2
+          cp FEBuilderGBA.Android/bin/Debug/net10.0-android/android-x64/com.laqieer.febuildergba-Signed.apk TestResults/patch-import-apks/upgrade.apk
+
+      - name: Exercise real SAF import, rejection, relaunch and config refresh
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          avd-name: zipdb-import-${{ github.run_id }}-${{ github.run_attempt }}
+          force-avd-creation: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          emulator-boot-timeout: 900
+          script: bash scripts/android-patch-import-smoke.sh --serial emulator-5554 --avd zipdb-import-${{ github.run_id }}-${{ github.run_attempt }} --base-apk TestResults/patch-import-apks/base.apk --upgrade-apk TestResults/patch-import-apks/upgrade.apk
+
+      - name: Upload import proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-patch-import-x86_64
+          path: |
+            TestResults/android-patch-import-*/report.json
+            TestResults/android-patch-import-*/*.png
+          if-no-files-found: warn

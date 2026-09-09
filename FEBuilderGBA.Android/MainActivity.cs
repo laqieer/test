@@ -85,12 +85,12 @@ namespace FEBuilderGBA.Android
         {
             try
             {
-                string targetRoot = FilesDir!.AbsolutePath;
+                string targetRoot = FilesDir!.CanonicalPath;
                 string version = GetAppVersionString();
 
                 var source = new AndroidAssetSource(Assets!);
                 AndroidConfigExtractorCore.ExtractionResult result =
-                    AndroidConfigExtractorCore.EnsureExtracted(source, targetRoot, version);
+                    AndroidConfigExtractorCore.EnsureExtracted(source, targetRoot, version, preservePatchDatabase: true);
 
                 global::Android.Util.Log.Info(LogTag,
                     $"config extraction: {result} (version={version}, target={targetRoot})");

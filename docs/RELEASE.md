@@ -172,6 +172,7 @@ The release flow is therefore: **bump the tag → push it → CI does the rest.*
 - [ ] `master` is green on `msbuild.yml`, `crossplatform.yml`, and `check.yml`.
 - [ ] Tag name follows `ver_YYYYMMDD.NN` and does not already exist.
 - [ ] `config/patch2/version.txt` is current if patches changed (see [DEPLOYMENT.md](DEPLOYMENT.md#patch2-version-management)).
+- [ ] For offline patch-import changes, affected Core/Avalonia suites and the real Android SAF import/rejection/relaunch/config-upgrade proof pass at the reviewed source revision. Inspect the actual screenshots and hash report; fake-adb tests or boot/parity success alone are not import proof.
 - [ ] All four platform assets collected (WinForms zip, 3× CLI, 3× Avalonia, Android APK).
 - [ ] `LICENSE` + `THIRD-PARTY-NOTICES.md` present inside every artifact: the WinForms zip via `release.ps1`, the CLI/Avalonia bundles via `crossplatform.yml`, and the Android APK via `<AndroidAsset>` entries in `FEBuilderGBA.Android/FEBuilderGBA.Android.csproj` (both files land under the APK's `assets/`) — GPLv3 compliance, [#1633](https://github.com/laqieer/FEBuilderGBA/issues/1633).
 - [ ] Release notes / changelog drafted (changelog automation tracked by [#1632](https://github.com/laqieer/FEBuilderGBA/issues/1632)).
@@ -189,7 +190,7 @@ These do **not** block a manual WinForms release, but flag them in release notes
 | Release-signed (non-debug) Android APK/AAB | [#1631](https://github.com/laqieer/FEBuilderGBA/issues/1631) |
 | Changelog / release-notes generation | [#1632](https://github.com/laqieer/FEBuilderGBA/issues/1632) |
 | Code-sign / notarize Windows + macOS artifacts — **conditional, secret-gated** ([§6.1](#61-code-signing--notarization-1634)): the CI wiring is in place, but artifacts stay **unsigned until the maintainer adds the certificate secrets** | [#1634](https://github.com/laqieer/FEBuilderGBA/issues/1634) |
-| Android: patch2 binary-patch library + FE-Repo resources not delivered on-device (desktop-only; in-app empty-state notice shown — see [docs/ANDROID.md §5.1](ANDROID.md)) | [#1641](https://github.com/laqieer/FEBuilderGBA/issues/1641) |
+| Android: Git/HTTP patch2 delivery and FE-Repo remain unavailable; the separate offline patch-database ZIP import does not bundle data or enable unsupported patch execution — see [Android storage/import scope](ANDROID.md#52-offline-patch-database-zip-import) | [#1641](https://github.com/laqieer/FEBuilderGBA/issues/1641), [#2158](https://github.com/laqieer/FEBuilderGBA/issues/2158) |
 | iOS: preview head — builds an unsigned `.ipa`; on-device runtime (touch UX, file pickers, AOT/trim) unvalidated, per-editor file-flow guards not yet extended to iOS, patch2/FE-Repo not bundled (same as Android) — see [docs/IOS.md](IOS.md) | [#1859](https://github.com/laqieer/FEBuilderGBA/issues/1859) |
 | iOS: release-signed (non-unsigned) `.ipa` + App Store / TestFlight distribution (needs a paid Apple Developer account + `APPLE_*` secrets) | [#1859](https://github.com/laqieer/FEBuilderGBA/issues/1859) |
 

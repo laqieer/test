@@ -1808,10 +1808,18 @@ namespace FEBuilderGBA
         /// </summary>
         public static List<PatchRegion> CollectPatchRegionsWithBytes(
             ROM rom, string patchFilePath, out int untraceableCount)
+            => CollectPatchRegionsWithBytesCore(rom, patchFilePath, out untraceableCount, File.Exists, File.ReadAllBytes);
+
+        internal static List<PatchRegion> CollectPatchRegionsWithBytesForTest(ROM rom, string patchFilePath,
+            out int untraceableCount, Func<string, bool> fileExists, Func<string, byte[]> readBytes)
+            => CollectPatchRegionsWithBytesCore(rom, patchFilePath, out untraceableCount, fileExists, readBytes);
+
+        static List<PatchRegion> CollectPatchRegionsWithBytesCore(ROM rom, string patchFilePath,
+            out int untraceableCount, Func<string, bool> fileExists, Func<string, byte[]> readBytes)
         {
             untraceableCount = 0;
             var regions = new List<PatchRegion>();
-            if (rom == null || !File.Exists(patchFilePath)) return regions;
+            if (rom == null || !fileExists(patchFilePath)) return regions;
 
             var allParams = ParsePatchParams(patchFilePath);
             string type = GetPatchType(allParams);
@@ -1847,10 +1855,10 @@ namespace FEBuilderGBA
                 if (addrPart.StartsWith("$", StringComparison.OrdinalIgnoreCase)) { untraceableCount++; continue; }
                 uint addr = ParseHexAddress(addrPart);
                 if (addr == U.NOT_FOUND) { untraceableCount++; continue; }
-                if (!File.Exists(filePath)) { untraceableCount++; continue; }
+                if (!fileExists(filePath)) { untraceableCount++; continue; }
 
                 byte[] binData;
-                try { binData = File.ReadAllBytes(filePath); }
+                try { binData = readBytes(filePath); }
                 catch { untraceableCount++; continue; }
                 if (binData.Length == 0) continue;
                 if (addr + binData.Length > rom.Data.Length) continue;

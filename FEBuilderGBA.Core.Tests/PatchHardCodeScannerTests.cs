@@ -21,6 +21,97 @@ namespace FEBuilderGBA.Core.Tests
     [Collection("SharedState")]
     public class PatchHardCodeScannerTests
     {
+        public static System.Collections.Generic.IEnumerable<object[]> ImportedConditionCases()
+        {
+            foreach (string key in new[] { "IF", "IFNOT", "PATCHED_IF", "PATCHED_IFNOT", "CONFLICT_IF" })
+                foreach (string macro in new[] { "$FGREP4", "$FGREP4END", "$FGREP4ENDA", "$FGREP4END+1" })
+                    yield return new object[] { key, macro };
+        }
+
+        [Theory]
+        [MemberData(nameof(ImportedConditionCases))]
+        public void AuditedConditionsPreserveTheIndependentReadersSemantics(string key, string macro)
+        {
+            var (root, versionRoot) = MakeTempPatchDir();
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(versionRoot, "nested"));
+                Directory.CreateDirectory(Path.Combine(versionRoot, "shared"));
+                string definition = Path.Combine(versionRoot, "nested", "PATCH_audit.txt");
+                string pattern = Path.Combine(versionRoot, "shared", "pattern.bin");
+                byte[] bytes = { 0xAA, 0xBB, 0xCC, 0xDD };
+                File.WriteAllBytes(pattern, bytes);
+                File.WriteAllText(definition, "TYPE=BIN\n" + key + ":" + macro + " ../shared/pattern.bin=0xAA 0xBB");
+                PatchDatabaseMetadataAuditCore.Audit(versionRoot, new System.Collections.Generic.Dictionary<string, long>
+                {
+                    ["nested/PATCH_audit.txt"] = new FileInfo(definition).Length,
+                    ["shared/pattern.bin"] = bytes.Length,
+                });
+                ROM rom = MakeFe8uRom();
+                foreach (int offset in new[] { 0x2000, 0x3000 })
+                {
+                    bytes.CopyTo(rom.Data, offset);
+                    rom.Data[offset + 4] = 0xAA;
+                    rom.Data[offset + 5] = 0xBB;
+                }
+                var patch = PatchHardCodeScanner.LoadPatch(rom, definition, "en");
+                int existsCalls = 0, readCalls = 0;
+                bool Exists(string path)
+                {
+                    existsCalls++;
+                    Assert.Equal(pattern, Path.GetFullPath(path));
+                    return true;
+                }
+                byte[] Read(string path)
+                {
+                    readCalls++;
+                    Assert.Equal(pattern, Path.GetFullPath(path));
+                    return bytes;
+                }
+                Assert.Equal(PatchHardCodeScanner.CheckIF(rom, patch),
+                    PatchHardCodeScanner.CheckIFWithFileReadsForTest(rom, patch, Exists, Read));
+                Assert.Equal(1, existsCalls);
+                Assert.Equal(1, readCalls);
+                Assert.Equal(PatchHardCodeScanner.EaBinInstallStatus(rom, patch),
+                    PatchHardCodeScanner.EaBinInstallStatusWithFileReadsForTest(rom, patch, Exists, Read));
+                int expected = key is "PATCHED_IF" or "PATCHED_IFNOT" ? 2 : 1;
+                Assert.Equal(expected, existsCalls);
+                Assert.Equal(expected, readCalls);
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
+        [Theory]
+        [MemberData(nameof(ImportedConditionCases))]
+        public void RejectedNetworkConditionNeverCallsTheIndependentReader(string key, string macro)
+        {
+            var (root, versionRoot) = MakeTempPatchDir();
+            int existsCalls = 0, readCalls = 0, consumerCalls = 0;
+            try
+            {
+                string definition = Path.Combine(versionRoot, "PATCH_rejected.txt");
+                File.WriteAllText(definition, "TYPE=BIN\n" + key + ":" + macro +
+                    @" \\unused.invalid\share\pattern.bin=0xAA 0xBB");
+                Assert.Throws<InvalidDataException>(() =>
+                {
+                    PatchDatabaseMetadataAuditCore.Audit(versionRoot,
+                        new System.Collections.Generic.Dictionary<string, long>
+                        {
+                            ["PATCH_rejected.txt"] = new FileInfo(definition).Length,
+                        });
+                    consumerCalls++;
+                    var patch = PatchHardCodeScanner.LoadPatch(MakeFe8uRom(), definition, "en");
+                    _ = PatchHardCodeScanner.CheckIFWithFileReadsForTest(MakeFe8uRom(), patch,
+                        _ => { existsCalls++; return false; },
+                        _ => { readCalls++; return Array.Empty<byte>(); });
+                });
+                Assert.Equal(0, consumerCalls);
+                Assert.Equal(0, existsCalls);
+                Assert.Equal(0, readCalls);
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
         // ---- helpers -------------------------------------------------------
 
         // Build a synthetic FE8U ROM (version != 0, VersionToFilename == "FE8U").

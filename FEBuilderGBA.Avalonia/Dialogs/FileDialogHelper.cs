@@ -585,6 +585,32 @@ namespace FEBuilderGBA.Avalonia.Dialogs
             return files.Count > 0 ? files[0] : null;
         }
 
+        internal static FilePickerOpenOptions CreatePatchDatabaseZipOpenOptions()
+            => new FilePickerOpenOptions
+            {
+                Title = R._("Import Patch Database ZIP"),
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType(R._("Patch database ZIP"))
+                    {
+                        Patterns = new[] { "*.zip" },
+                        MimeTypes = new[] { "application/zip", "application/x-zip-compressed" },
+                        AppleUniformTypeIdentifiers = new[] { "public.zip-archive" },
+                    },
+                    MakeAllFileType(),
+                },
+            };
+
+        public static async Task<IStorageFile?> OpenPatchDatabaseZipPick(TopLevel? owner)
+        {
+            var provider = GetStorageProvider(owner, nameof(OpenPatchDatabaseZipPick));
+            if (provider?.CanOpen != true)
+                throw new InvalidOperationException(R._("The file picker is unavailable on this platform."));
+            var files = await provider.OpenFilePickerAsync(CreatePatchDatabaseZipOpenOptions());
+            return files.Count > 0 ? files[0] : null;
+        }
+
         /// <summary>Save a GBA ROM and return the picked IStorageFile (#1124).</summary>
         public static async Task<IStorageFile?> SaveRomFilePick(TopLevel? owner, string? suggestedName = null)
         {

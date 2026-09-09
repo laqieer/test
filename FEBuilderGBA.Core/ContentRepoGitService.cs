@@ -86,12 +86,37 @@ namespace FEBuilderGBA
 
         public static Patch2GitResult InitializeOrUpdate(string repoDir, string url, Action<string>? progress = null)
         {
+            string gitExe = "";
+            return InitializeOrUpdateWithLease(repoDir, () =>
+                InitializeOrUpdateCore(repoDir, gitExe, url,
+                    GitUtil.IsGitRepo, GitUtil.Clone, GitUtil.Update, progress),
+                () =>
+                {
+                    gitExe = GitUtil.FindGitExecutable();
+                    return string.IsNullOrEmpty(gitExe)
+                        ? new Patch2GitResult { Kind = Patch2GitResultKind.GitNotFound } : null;
+                });
+        }
+
+        internal static Patch2GitResult InitializeOrUpdateWithLease(string repoDir, Func<Patch2GitResult> operation,
+            Func<Patch2GitResult?>? beforeLease = null)
+        {
             if (!TryEnter())
                 return new Patch2GitResult { Kind = Patch2GitResultKind.AlreadyRunning };
             try
             {
-                return InitializeOrUpdateCore(repoDir, GitUtil.FindGitExecutable(), url,
-                    GitUtil.IsGitRepo, GitUtil.Clone, GitUtil.Update, progress);
+                var preliminary = beforeLease?.Invoke();
+                if (preliminary != null) return preliminary;
+                using var lease = PatchDatabaseOperationLeaseCore.AcquireForPatch2Repository(repoDir);
+                return operation();
+            }
+            catch (PatchDatabaseOperationLeaseCore.BusyException)
+            {
+                return new Patch2GitResult { Kind = Patch2GitResultKind.AlreadyRunning };
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+            {
+                return new Patch2GitResult { Kind = Patch2GitResultKind.Failed, ExitCode = -1, Log = ex.Message };
             }
             finally { Exit(); }
         }

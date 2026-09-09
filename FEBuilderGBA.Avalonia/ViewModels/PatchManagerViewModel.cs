@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using FEBuilderGBA.Avalonia.Services;
 
 namespace FEBuilderGBA.Avalonia.ViewModels
 {
@@ -104,6 +105,7 @@ namespace FEBuilderGBA.Avalonia.ViewModels
         readonly ObservableCollection<PatchEntry> _filteredPatches = new();
 
         public bool IsLoaded { get => _isLoaded; set => SetField(ref _isLoaded, value); }
+        public bool CanImportPatchDatabase => PatchDatabaseImportService.CanImportLoadedRom;
 
         /// <summary>
         /// Label for the in-app patch2 Initialize/Update button (#1817). "Update Patch Database" when the
@@ -173,23 +175,44 @@ namespace FEBuilderGBA.Avalonia.ViewModels
         /// <summary>
         /// Load the list of patches from config/patch2/{version}/.
         /// </summary>
-        public void LoadPatchList()
+        public void LoadPatchList() => LoadPatchListCore(requireCompleteRead: false);
+
+        public bool ReloadImportedPatchList() => LoadPatchListCore(requireCompleteRead: true);
+
+        bool LoadPatchListCore(bool requireCompleteRead)
         {
             _allPatches.Clear();
             _filteredPatches.Clear();
+            TotalCount = 0;
+            InstalledCount = 0;
+            SelectedPatch = null;
 
             ROM rom = CoreState.ROM;
             if (rom?.RomInfo == null)
             {
+                StatusMessage = PatchDatabaseImportService.AvailabilityMessage;
                 IsLoaded = true;
-                return;
+                return false;
             }
 
             string version = rom.RomInfo.VersionToFilename;
             string patchDir = ResolvePatchDirectory(version);
             string lang = PatchMetadataCore.GetLanguageSuffix();
 
-            var infos = PatchMetadataCore.EnumeratePatches(patchDir, rom, lang);
+            List<PatchMetadataCore.PatchInfo> infos;
+            if (requireCompleteRead)
+            {
+                if (!PatchMetadataCore.TryEnumeratePatches(patchDir, rom, lang, out infos, out string error))
+                {
+                    StatusMessage = R._("The installed database could not be refreshed: {0}", error);
+                    IsLoaded = true;
+                    return false;
+                }
+            }
+            else
+            {
+                infos = PatchMetadataCore.EnumeratePatches(patchDir, rom, lang);
+            }
             foreach (var info in infos)
                 _allPatches.Add(PatchEntry.FromPatchInfo(info));
 
@@ -200,6 +223,7 @@ namespace FEBuilderGBA.Avalonia.ViewModels
 
             ApplyFilter();
             IsLoaded = true;
+            return TotalCount != 0;
         }
 
         /// <summary>
@@ -527,6 +551,9 @@ namespace FEBuilderGBA.Avalonia.ViewModels
         public static string ResolvePatchDirectory(string version)
         {
             string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            string baseDir = string.IsNullOrEmpty(CoreState.BaseDirectory) ? exeDir : CoreState.BaseDirectory;
+            string canonical = Path.Combine(baseDir, "config", "patch2", version);
+            if (Directory.Exists(canonical)) return canonical;
 
             string path = Path.Combine(exeDir, "config", "patch2", version);
             if (Directory.Exists(path)) return path;
@@ -549,7 +576,7 @@ namespace FEBuilderGBA.Avalonia.ViewModels
                 dir = parent;
             }
 
-            return Path.Combine(exeDir, "config", "patch2", version);
+            return canonical;
         }
     }
 }

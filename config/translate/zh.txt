@@ -28640,3 +28640,63 @@ Avalonia 补丁管理器目前不支持补丁类型“{0}”。
 
 :Unknown
 未知
+
+:Import Patch Database ZIP
+导入补丁数据库 ZIP
+
+:Patch database ZIP
+补丁数据库 ZIP
+
+:Load a ROM before importing its patch database.
+请先加载 ROM，再导入对应的补丁数据库。
+
+:Patch database import is unavailable for this ROM version.
+此 ROM 版本不支持导入补丁数据库。
+
+:Import the validated patch database for {0}?\r\nTarget: {1}\r\nFiles: {2}; expanded bytes: {3}\r\n{4}\r\nNo patches will be applied to the ROM.
+是否导入已验证的 {0} 补丁数据库？\r\n目标位置：{1}\r\n文件数：{2}；解压后字节数：{3}\r\n{4}\r\n不会向 ROM 应用任何补丁。
+
+:The existing database for this version will be replaced after confirmation.
+确认后将替换此版本现有的数据库。
+
+:A new database for this version will be installed.
+将安装此版本的新数据库。
+
+:Import cancelled. The previous database was not replaced.
+已取消导入，未替换原有数据库。
+
+:The loaded ROM changed. Import was cancelled; the previous database was not replaced.
+加载的 ROM 已发生变化。已取消导入，未替换原有数据库。
+
+:Validating the ZIP and staging the patch database…
+正在验证 ZIP 并将补丁数据库暂存至工作目录…
+
+:Imported patch database for {0}; list refreshed. No patches were applied. Restart recommended for cached data.
+已导入 {0} 补丁数据库并刷新列表。未应用任何补丁。建议重新启动以更新缓存数据。
+
+:Imported patch database for {0}, but the list was not refreshed. Reopen Patch Manager. No patches were applied.
+已导入 {0} 补丁数据库，但未能刷新列表。请重新打开补丁管理器。未应用任何补丁。
+
+:Patch database import failed: {0}
+补丁数据库导入失败：{0}
+
+:The patch database could not be refreshed: {0}
+无法刷新补丁数据库：{0}
+
+:The installed database could not be refreshed: {0}
+无法刷新已安装的数据库：{0}
+
+:Patch database recovery needs attention: {0}
+补丁数据库恢复需要处理：{0}
+
+:Retained workspace: {0}
+保留的工作目录：{0}
+
+:Import cleanup requires recovery. Retained workspace: {0}\r\n{1}
+导入清理需要恢复处理。保留的工作目录：{0}\r\n{1}
+
+:The file picker is unavailable on this platform.
+此平台不支持文件选择器。
+
+:No patch database is installed for the loaded ROM. Choose Import Patch Database ZIP. Git-based initialization/update is unavailable on Android; patch data is not bundled in the APK.
+尚未安装当前 ROM 对应的补丁数据库。请选择“导入补丁数据库 ZIP”。Android 不支持通过 Git 初始化或更新数据库，APK 中也未包含补丁数据。

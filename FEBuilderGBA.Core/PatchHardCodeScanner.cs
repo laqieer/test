@@ -286,6 +286,13 @@ namespace FEBuilderGBA
         // difference is the CacheCheckIF side-table — irrelevant to the gate result,
         // already documented as intentionally omitted above). Body unchanged.
         public static string CheckIF(ROM rom, PatchSt patch)
+            => CheckIFCore(rom, patch, File.Exists, File.ReadAllBytes);
+
+        internal static string CheckIFWithFileReadsForTest(ROM rom, PatchSt patch,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
+            => CheckIFCore(rom, patch, fileExists, readFile);
+
+        static string CheckIFCore(ROM rom, PatchSt patch, Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             foreach (var pair in patch.Param)
             {
@@ -305,7 +312,7 @@ namespace FEBuilderGBA
                 }
 
                 string basedir = Path.GetDirectoryName(patch.PatchFileName) ?? "";
-                uint address = convertBinAddressString(rom, addrstring, basedir);
+                uint address = convertBinAddressString(rom, addrstring, basedir, fileExists, readFile);
                 if (!U.isSafetyOffset(address, rom))
                 {
                     if (!isnot)
@@ -445,6 +452,14 @@ namespace FEBuilderGBA
         /// The ROM is passed EXPLICITLY (no CoreState.ROM read), honoring this file's header guarantee.
         /// </summary>
         public static InstallStatusEnum EaBinInstallStatus(ROM rom, PatchSt patch)
+            => EaBinInstallStatusCore(rom, patch, File.Exists, File.ReadAllBytes);
+
+        internal static InstallStatusEnum EaBinInstallStatusWithFileReadsForTest(ROM rom, PatchSt patch,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
+            => EaBinInstallStatusCore(rom, patch, fileExists, readFile);
+
+        static InstallStatusEnum EaBinInstallStatusCore(ROM rom, PatchSt patch,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             if (rom == null) throw new ArgumentNullException(nameof(rom));
             if (patch == null) throw new ArgumentNullException(nameof(patch));
@@ -492,7 +507,7 @@ namespace FEBuilderGBA
                 }
 
                 string basedir = Path.GetDirectoryName(patch.PatchFileName) ?? "";
-                uint address = convertBinAddressString(rom, addrstring, basedir);
+                uint address = convertBinAddressString(rom, addrstring, basedir, fileExists, readFile);
                 if (!U.isSafetyOffset(address, rom))
                 {
                     // The resolved address is NOT_FOUND / unsafe. What that MEANS depends on the marker form:
@@ -643,7 +658,8 @@ namespace FEBuilderGBA
         // EndWeaponDebuffTable*, XGREP) resolve to NOT_FOUND, which the safety
         // check converts to the "E" skip for a positive condition — matching the
         // WinForms outcome that those patches are not applicable.
-        static uint convertBinAddressString(ROM rom, string addrstring, string basedir)
+        static uint convertBinAddressString(ROM rom, string addrstring, string basedir,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             const uint start_offset = 0x100;
 
@@ -693,7 +709,7 @@ namespace FEBuilderGBA
 
                 uint align = U.atoi(m.Groups[2].Value);
                 uint skip = U.atoi(m.Groups[4].Value);
-                byte[] need = MakeGrepData(value, basedir, m.Groups[1].Value == "F");
+                byte[] need = MakeGrepData(value, basedir, m.Groups[1].Value == "F", fileExists, readFile);
                 if (need == null || need.Length == 0) return U.NOT_FOUND;
 
                 if (m.Groups[3].Value == "ENDA")
@@ -728,7 +744,8 @@ namespace FEBuilderGBA
             return U.NOT_FOUND;
         }
 
-        static byte[] MakeGrepData(string value, string basedir, bool isFile)
+        static byte[] MakeGrepData(string value, string basedir, bool isFile,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             // $FGREP <file> — file-inclusion GREP. VERBATIM port of the WinForms
             // MakeGrepData(value, basedir) overload (FEBuilderGBA/PatchForm.cs:3222):
@@ -743,7 +760,7 @@ namespace FEBuilderGBA
             // discipline this file guarantees).
             if (isFile)
             {
-                return MakeFGrepData(value, basedir);
+                return MakeFGrepData(value, basedir, fileExists, readFile);
             }
 
             // $GREP <bytes...> — inline hex byte pattern (unchanged).
@@ -778,7 +795,8 @@ namespace FEBuilderGBA
         // cannot throw. Headless-safe: any IO failure / bad path degrades to the empty
         // pattern (try/catch), never throws — preserving WF's missing-file outcome (empty
         // pattern -> U.Grep NOT_FOUND).
-        static byte[] MakeFGrepData(string value, string basedir)
+        static byte[] MakeFGrepData(string value, string basedir,
+            Func<string, bool> fileExists, Func<string, byte[]> readFile)
         {
             int firstSp = value.IndexOf(' ');
             if (firstSp < 0)
@@ -792,11 +810,11 @@ namespace FEBuilderGBA
             try
             {
                 string fullpath = Path.Combine(basedir ?? "", filename ?? "");
-                if (!File.Exists(fullpath))
+                if (!fileExists(fullpath))
                 {
                     return new byte[0];
                 }
-                return File.ReadAllBytes(fullpath);
+                return readFile(fullpath);
             }
             catch
             {

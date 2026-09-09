@@ -13817,6 +13817,14 @@ namespace FEBuilderGBA
         /// ported inline. No-op when <c>SYMBOL=</c> is absent or the file is missing.
         /// </summary>
         static void ProcessPatchSymbolByList(List<Address> list, PatchInstallCore.PatchSt patch)
+            => ProcessPatchSymbolCore(list, patch, System.IO.File.Exists, System.IO.File.ReadAllText);
+
+        internal static void ProcessPatchSymbolWithFileReadsForTest(List<Address> list, PatchInstallCore.PatchSt patch,
+            Func<string, bool> fileExists, Func<string, string> readText)
+            => ProcessPatchSymbolCore(list, patch, fileExists, readText);
+
+        static void ProcessPatchSymbolCore(List<Address> list, PatchInstallCore.PatchSt patch,
+            Func<string, bool> fileExists, Func<string, string> readText)
         {
             string symbol = U.at(patch.Param, "SYMBOL", "");
             if (symbol == "")
@@ -13825,11 +13833,11 @@ namespace FEBuilderGBA
             }
             string basedir = System.IO.Path.GetDirectoryName(patch.PatchFileName) ?? "";
             symbol = System.IO.Path.Combine(basedir, symbol);
-            if (!System.IO.File.Exists(symbol))
+            if (!fileExists(symbol))
             {
                 return;
             }
-            string symbolData = System.IO.File.ReadAllText(symbol);
+            string symbolData = readText(symbol);
             SymbolUtil.ProcessSymbolToList(list, patch.Name, symbolData, 0);
         }
 
@@ -14008,31 +14016,10 @@ namespace FEBuilderGBA
             ROM rom, string editpatch, List<EventAssemblerUninstallCore.BinMapping> binMappings,
             PatchInstallCore.PatchSt patchSt, List<string> untraceable)
         {
-            string basedir = System.IO.Path.GetDirectoryName(patchSt.PatchFileName) ?? "";
-            editpatch = System.IO.Path.Combine(basedir, editpatch);
-
-            if (!System.IO.File.Exists(editpatch))
-            {//WF :4619-4623 — Debug.Assert(false); return. The producer records the gap.
-                untraceable.Add(R._("EDIT_PATCH file not found: {0}", editpatch));
-                return;
-            }
-            PatchInstallCore.PatchSt editpatchSt;
-            try
-            {
-                editpatchSt = PatchInstallCore.LoadPatch(editpatch);
-            }
-            catch (Exception ex)
-            {//Honour "never abort the producer": a bad EDIT_PATCH becomes a recorded gap.
-                untraceable.Add(R._("Could not read the EDIT_PATCH file: {0}", ex.Message));
-                return;
-            }
-            if (editpatchSt == null)
-            {//WF :4625-4629 — Debug.Assert(false); return (no TYPE= line).
-                untraceable.Add(R._("EDIT_PATCH is not a valid patch (no TYPE=): {0}", editpatch));
-                return;
-            }
-
-            basedir = System.IO.Path.GetDirectoryName(editpatchSt.PatchFileName) ?? "";  // WF :4631
+            var editpatchSt = LoadEditPatchCore(editpatch, patchSt, untraceable,
+                System.IO.File.Exists, path => PatchInstallCore.LoadPatch(path));
+            if (editpatchSt == null) return;
+            string basedir = System.IO.Path.GetDirectoryName(editpatchSt.PatchFileName) ?? "";  // WF :4631
             string type = U.at(editpatchSt.Param, "TYPE");
             if (type == "STRUCT")
             {//WF :4633
@@ -14046,6 +14033,41 @@ namespace FEBuilderGBA
             {//WF :4641 — BIN patch or a nested EA.
                 TraceEditPatchNest(rom, binMappings, editpatchSt, untraceable);
             }
+        }
+
+        internal static PatchInstallCore.PatchSt LoadEditPatchWithFileReadsForTest(string editpatch,
+            PatchInstallCore.PatchSt patch, List<string> untraceable, Func<string, bool> fileExists,
+            Func<string, PatchInstallCore.PatchSt> loadPatch)
+            => LoadEditPatchCore(editpatch, patch, untraceable, fileExists, loadPatch);
+
+        static PatchInstallCore.PatchSt LoadEditPatchCore(string editpatch, PatchInstallCore.PatchSt patchSt,
+            List<string> untraceable, Func<string, bool> fileExists, Func<string, PatchInstallCore.PatchSt> loadPatch)
+        {
+            string basedir = System.IO.Path.GetDirectoryName(patchSt.PatchFileName) ?? "";
+            editpatch = System.IO.Path.Combine(basedir, editpatch);
+
+            if (!fileExists(editpatch))
+            {//WF :4619-4623 — Debug.Assert(false); return. The producer records the gap.
+                untraceable.Add(R._("EDIT_PATCH file not found: {0}", editpatch));
+                return null;
+            }
+            PatchInstallCore.PatchSt editpatchSt;
+            try
+            {
+                editpatchSt = loadPatch(editpatch);
+            }
+            catch (Exception ex)
+            {//Honour "never abort the producer": a bad EDIT_PATCH becomes a recorded gap.
+                untraceable.Add(R._("Could not read the EDIT_PATCH file: {0}", ex.Message));
+                return null;
+            }
+            if (editpatchSt == null)
+            {//WF :4625-4629 — Debug.Assert(false); return (no TYPE= line).
+                untraceable.Add(R._("EDIT_PATCH is not a valid patch (no TYPE=): {0}", editpatch));
+                return null;
+            }
+
+            return editpatchSt;
         }
 
         // WF :4646 — recursive nest: trace the inner BIN/EA patch and append its mappings.
@@ -15783,6 +15805,17 @@ namespace FEBuilderGBA
         /// <param name="basedir">WF <c>basedir</c> — patch-file directory, for <c>$FGREP</c> file lookups.</param>
         /// <returns>ROM offset, or <see cref="U.NOT_FOUND"/> on any failure / carve-out.</returns>
         public static uint ResolvePatchAddress(ROM rom, string addrstring, uint appnedSize, uint startOffset, string basedir)
+            => ResolvePatchAddressCore(rom, addrstring, appnedSize, startOffset, basedir,
+                PatchMacroAddressResolverCore.Resolve);
+
+        internal static uint ResolvePatchAddressWithFileReadsForTest(ROM rom, string addrstring,
+            uint appnedSize, uint startOffset, string basedir, Func<string, bool> fileExists, Func<string, byte[]> readFile)
+            => ResolvePatchAddressCore(rom, addrstring, appnedSize, startOffset, basedir,
+                (r, expression, directory, start) => PatchMacroAddressResolverCore.ResolveWithFileReadsForTest(
+                    r, expression, directory, start, fileExists, readFile));
+
+        static uint ResolvePatchAddressCore(ROM rom, string addrstring, uint appnedSize, uint startOffset, string basedir,
+            Func<ROM, string, string, uint, uint> resolveAddress)
         {
             // appnedSize is intentionally unreferenced beyond the contract above: the only
             // WF branch that read it ($FREEAREA) is carved to NOT_FOUND in the Core resolver,
@@ -15814,7 +15847,7 @@ namespace FEBuilderGBA
                     return GetEndWeaponDebuffTable5(rom, startOffset);
             }
 
-            return PatchMacroAddressResolverCore.Resolve(rom, addrstring, basedir, startOffset);
+            return resolveAddress(rom, addrstring, basedir, startOffset);
         }
 
         // ---- $EndWeaponDebuffTable3/4/5 bounded-scan ports ------------------

@@ -28,6 +28,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\FEBuilderGBA.Avalonia\FEBuilderGBA.Avalonia.csproj" />
+    <Compile Include="..\scripts\SyntheticProofFixtures\SyntheticFe8URom.cs"
+             Link="Fixtures\SyntheticFe8URom.cs" />
   </ItemGroup>
   <!-- Bundle the license-clean Tuffy font (SIL OFL 1.1) + its license for the
        SkiaFontRasterizer determinism / golden-byte tests (#796). Loaded via

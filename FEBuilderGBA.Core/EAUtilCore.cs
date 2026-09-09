@@ -98,9 +98,24 @@ namespace FEBuilderGBA
         public string Filename { get; private set; }
         public string Dir { get; private set; }
         EAUtilLynDumpMode LynDump;
+        readonly Func<string, bool> fileExists;
+        readonly Func<string, byte[]> readBytes;
+        readonly Func<string, string[]> readLines;
+        readonly Func<string, bool, Elf> readElf;
 
         public EAUtilCore(string filename)
+            : this(filename, File.Exists, File.ReadAllBytes, File.ReadAllLines,
+                (path, hook) => new Elf(path, useHookMode: hook))
         {
+        }
+
+        internal EAUtilCore(string filename, Func<string, bool> fileExists, Func<string, byte[]> readBytes,
+            Func<string, string[]> readLines, Func<string, bool, Elf> readElf)
+        {
+            this.fileExists = fileExists;
+            this.readBytes = readBytes;
+            this.readLines = readLines;
+            this.readElf = readElf;
             Parse(filename);
         }
 
@@ -113,7 +128,7 @@ namespace FEBuilderGBA
             this.UntraceableNotes = new List<string>();
 
             this.CurrentLabel = "";
-            string[] lines = File.ReadAllLines(filename);
+            string[] lines = readLines(filename);
 
             for (int i = 0; i < lines.Length; i++)
             {
@@ -319,12 +334,12 @@ namespace FEBuilderGBA
         {
             //ソースコードがあればASMだろう.
             string srcFilename = U.ChangeExtFilename(fullPath, ".s");
-            if (File.Exists(srcFilename))
+            if (fileExists(srcFilename))
             {//ソースコードがあったのでASMです
                 return true;
             }
             srcFilename = U.ChangeExtFilename(fullPath, ".asm");
-            if (File.Exists(srcFilename))
+            if (fileExists(srcFilename))
             {//ソースコードがあったのでASMです
                 return true;
             }
@@ -373,14 +388,14 @@ namespace FEBuilderGBA
                     dataType = DataEnum.MIX;
                 }
             }
-            if (!File.Exists(fullbinname))
+            if (!fileExists(fullbinname))
             {
                 Data emptydata = new Data(filename, this.Dir, new byte[0], dataType);
                 this.DataList.Add(emptydata);
                 return false;
             }
 
-            Data data = new Data(filename, this.Dir, File.ReadAllBytes(fullbinname), dataType);
+            Data data = new Data(filename, this.Dir, readBytes(fullbinname), dataType);
             this.DataList.Add(data);
             return true;
         }
@@ -420,14 +435,14 @@ namespace FEBuilderGBA
             string fullbinname = Path.Combine(this.Dir, filename);
 
             DataEnum dataType = DataEnum.LYN;
-            if (!File.Exists(fullbinname))
+            if (!fileExists(fullbinname))
             {
                 Data emptydata = new Data(filename, this.Dir, new byte[0], dataType);
                 this.DataList.Add(emptydata);
                 return false;
             }
 
-            Elf elf = new Elf(fullbinname, useHookMode: false);
+            Elf elf = readElf(fullbinname, false);
             Data data = new Data(filename, this.Dir, elf.ProgramBIN, dataType);
             this.DataList.Add(data);
 
@@ -446,12 +461,12 @@ namespace FEBuilderGBA
             string filename = U.cut(a, "\"", "\"");
             string fullbinname = Path.Combine(this.Dir, filename);
 
-            if (!File.Exists(fullbinname))
+            if (!fileExists(fullbinname))
             {
                 return false;
             }
 
-            Elf elf = new Elf(fullbinname, useHookMode: true);
+            Elf elf = readElf(fullbinname, true);
             foreach (Elf.Sym sym in elf.SymList)
             {
                 if (!U.isPointer(sym.addr))
@@ -483,12 +498,12 @@ namespace FEBuilderGBA
             string filename = U.cut(line, "\"", "\"");
             string fullfilename = Path.Combine(this.Dir, filename);
 
-            if (!File.Exists(fullfilename))
+            if (!fileExists(fullfilename))
             {
                 return false;
             }
 
-            string[] lines = File.ReadAllLines(fullfilename);
+            string[] lines = readLines(fullfilename);
             EAUtilLynDumpMode lyndmp = new EAUtilLynDumpMode();
             foreach (string l in lines)
             {
@@ -546,7 +561,7 @@ namespace FEBuilderGBA
             string filename = U.cut(a, "\"", "\"");
             string fullbinname = Path.Combine(this.Dir, filename);
 
-            if (!File.Exists(fullbinname))
+            if (!fileExists(fullbinname))
             {
                 return false;
             }
@@ -570,12 +585,12 @@ namespace FEBuilderGBA
             return false;
         }
 
-        static byte[] Png2DmpHint(string filename)
+        byte[] Png2DmpHint(string filename)
         {
             string hint = filename + ".dmp";
-            if (File.Exists(hint))
+            if (fileExists(hint))
             {
-                return File.ReadAllBytes(hint);
+                return readBytes(hint);
             }
             return new byte[] { };
         }

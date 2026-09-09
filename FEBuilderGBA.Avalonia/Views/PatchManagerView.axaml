@@ -4,7 +4,7 @@
              x:Class="FEBuilderGBA.Avalonia.Views.PatchManagerView">
   <Grid ColumnDefinitions="400,*" Margin="8">
     <!-- Left panel: search + patch list -->
-    <Grid Grid.Column="0" RowDefinitions="Auto,Auto,Auto,*" Margin="0,0,4,0">
+    <Grid Grid.Column="0" RowDefinitions="Auto,Auto,Auto,Auto,Auto,*" Margin="0,0,4,0">
       <!-- Search box -->
       <TextBox AutomationProperties.AutomationId="PatchManager_Search_Input" Grid.Row="0" Name="SearchBox" Watermark="Filter patches by name, tag, or author..."
                Margin="0,0,0,4" />
@@ -19,8 +19,20 @@
               Content="Initialize Patch Database" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
               Margin="0,0,0,4" />
 
+      <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,0,0,4">
+        <Button AutomationProperties.AutomationId="PatchManager_ImportPatchDatabase_Button"
+                Name="ImportPatchDatabaseButton" Content="Import Patch Database ZIP"
+                IsEnabled="False" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+        <Button Grid.Column="1" AutomationProperties.AutomationId="PatchManager_CancelImport_Button"
+                Name="CancelPatchDatabaseImportButton" Content="Cancel" IsVisible="False" Margin="4,0,0,0" />
+      </Grid>
+
+      <TextBlock Grid.Row="4" AutomationProperties.AutomationId="PatchManager_StatusMessage_Label"
+                 AutomationProperties.LiveSetting="Polite" Name="StatusMessageLabel"
+                 TextWrapping="Wrap" FontSize="12" Foreground="Gray" Margin="0,0,0,8" />
+
       <!-- Patch list -->
-      <ListBox AutomationProperties.AutomationId="PatchManager_PatchList_List" Grid.Row="3" Name="PatchListBox" SelectionMode="Single">
+      <ListBox AutomationProperties.AutomationId="PatchManager_PatchList_List" Grid.Row="5" Name="PatchListBox" SelectionMode="Single">
         <ListBox.ItemTemplate>
           <DataTemplate DataType="vm:PatchEntry">
             <Grid ColumnDefinitions="*,Auto" Margin="2">
@@ -103,12 +115,6 @@
             <Button AutomationProperties.AutomationId="PatchManager_Uninstall_Button" Name="UninstallButton" Content="Uninstall Patch" IsEnabled="False"
                     Padding="12,6" />
           </StackPanel>
-
-          <!-- Status Message -->
-          <TextBlock AutomationProperties.AutomationId="PatchManager_StatusMessage_Label"
-                     AutomationProperties.LiveSetting="Polite"
-                     Name="StatusMessageLabel" TextWrapping="Wrap" FontSize="12"
-                     Foreground="Gray" Margin="0,0,0,8" />
 
           <!-- Separator -->
           <Separator Margin="0,4" />

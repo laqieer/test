@@ -11,9 +11,8 @@ namespace FEBuilderGBA
     /// resource submodules are installed on demand via in-process git (<c>GitUtil</c>). The Android
     /// head cannot do this: it has no in-process git, the submodules are far too large to bundle as
     /// <c>AndroidAsset</c> inside the APK, and app-private SAF/<c>FilesDir</c> storage differs from the
-    /// desktop "loose files beside the exe" layout. So patch2 and FE-Repo are **desktop-only for now**;
-    /// an on-demand HTTP download into app-private storage is the intended future mechanism, tracked
-    /// under epic #1070.
+    /// desktop "loose files beside the exe" layout. Avalonia can instead import a patch-database ZIP
+    /// through SAF. This does not enable Git delivery, bundle patch data, or make FE-Repo available.
     /// </para>
     ///
     /// <para>
@@ -46,9 +45,8 @@ namespace FEBuilderGBA
         /// In-app empty-state message for the Patch Manager when running on Android (no patch2 on device).
         /// </summary>
         public const string PatchLibraryUnavailableMessage =
-            "The binary-patch library (config/patch2) is not available on Android yet. " +
-            "It ships on the desktop builds via git and is not bundled in the APK. " +
-            "On-device patch delivery is planned (see epic #1070). Use a desktop build to install patches.";
+            "No patch database is installed for the loaded ROM. Choose Import Patch Database ZIP. " +
+            "Git-based initialization/update is unavailable on Android; patch data is not bundled in the APK.";
 
         /// <summary>
         /// In-app empty-state message for the FE-Repo resource browser when running on Android.

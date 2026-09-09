@@ -10,13 +10,15 @@ namespace FEBuilderGBA.Core.Tests
     public class AndroidResourceNoticeCoreTests
     {
         [Fact]
-        public void PatchMessage_IsNonEmpty_AndMentionsPatch2AndPlanEpic()
+        public void PatchMessage_ExplainsOfflineImportAndRemainingGitLimitation()
         {
             string msg = AndroidResourceNoticeCore.PatchLibraryUnavailableMessage;
             Assert.False(string.IsNullOrWhiteSpace(msg));
-            Assert.Contains("patch2", msg, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Import Patch Database ZIP", msg);
             Assert.Contains("Android", msg, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("#1070", msg); // points users at the on-device-delivery epic
+            Assert.Contains("Git-based initialization/update is unavailable", msg);
+            Assert.Contains("not bundled in the APK", msg);
+            Assert.DoesNotContain("not available on Android yet", msg);
         }
 
         [Fact]
